@@ -6,7 +6,7 @@ import plotly.express as px
 st.set_page_config(page_title="Service Calls Dashboard", layout="wide")
 st.markdown("## Service Calls Dashboard")
 
-FILE_NAME = "CALL RECORDS 2026.xlsx"  # keep in repo root (same folder as app.py)
+FILE_NAME = "CALL RECORDS 2026.xlsx"  # put this file in same folder as app.py
 
 DATE_COL = "DATE"
 CUSTOMER_COL = "CUSTOMER"
@@ -44,7 +44,6 @@ def label_day(ts: pd.Series) -> pd.Series:
 
 
 def label_week(ts: pd.Series) -> pd.Series:
-    # week start Monday
     wk_start = ts.dt.to_period("W-MON").apply(lambda p: p.start_time.date())
     return wk_start.astype(str)
 
@@ -54,7 +53,6 @@ def label_month(ts: pd.Series) -> pd.Series:
 
 
 def apply_quick_range(mode: str, available_dates: list):
-    # returns (start_d, end_d)
     min_d, max_d = available_dates[0], available_dates[-1]
 
     if mode == "Today (last available)":
@@ -72,14 +70,6 @@ def apply_quick_range(mode: str, available_dates: list):
         start_d = max(start_d.date(), min_d)
         return start_d, end_d
 
-    if mode == "This month":
-        end_d = max_d
-        p = pd.Period(end_d, freq="M")
-        start_d = p.start_time.date()
-        if start_d < min_d:
-            start_d = min_d
-        return start_d, end_d
-
     if mode == "This week":
         end_d = max_d
         p = pd.Period(end_d, freq="W-MON")
@@ -88,8 +78,15 @@ def apply_quick_range(mode: str, available_dates: list):
             start_d = min_d
         return start_d, end_d
 
-    # All time
-    return min_d, max_d
+    if mode == "This month":
+        end_d = max_d
+        p = pd.Period(end_d, freq="M")
+        start_d = p.start_time.date()
+        if start_d < min_d:
+            start_d = min_d
+        return start_d, end_d
+
+    return min_d, max_d  # All time
 
 
 @st.cache_data(ttl=300)
@@ -128,20 +125,15 @@ available_dates = sorted(df[DATE_COL].dt.date.unique())
 min_d, max_d = available_dates[0], available_dates[-1]
 
 
-# -------------------- LAYOUT (CONTENT + RIGHT FILTER DRAWER) --------------------
+# -------------------- LAYOUT --------------------
 content_col, filter_col = st.columns([4.7, 1.3], gap="large")
 
 with filter_col:
-    # Most websites: a small "Filters" button or header, collapsible, with:
-    # - Customer dropdown
-    # - Date: Quick ranges + Custom range
-    # - Group by shown only for multi-day ranges
     with st.expander("Filters", expanded=True):
         customers = ["(ALL)"] + sorted(df[CUSTOMER_COL].dropna().unique().tolist())
-        sel_customer = st.selectbox("Customer", customers, index=0)
+        sel_customer = st.selectbox("Customer", customers, index=0, key="customer_select")
 
         st.markdown("**Date**")
-
         tab_quick, tab_custom = st.tabs(["Quick", "Custom"])
 
         # defaults
@@ -153,18 +145,24 @@ with filter_col:
                 "Range",
                 ["Today (last available)", "Last 7 days", "Last 30 days", "This week", "This month", "All time"],
                 index=3,
+                key="quick_range",
             )
             start_d, end_d = apply_quick_range(quick, available_dates)
 
-            # If it's a single day, hide grouping
             if start_d != end_d:
-                group_by = st.selectbox("Group by", ["Day", "Week", "Month"], index=2)
+                group_by = st.selectbox("Group by", ["Day", "Week", "Month"], index=2, key="group_by_quick")
 
         with tab_custom:
-            mode = st.radio(" ", ["Single day", "Range"], horizontal=True, label_visibility="collapsed")
+            mode = st.radio(
+                " ",
+                ["Single day", "Range"],
+                horizontal=True,
+                label_visibility="collapsed",
+                key="custom_mode",
+            )
 
             if mode == "Single day":
-                sel_day = st.selectbox("Day", available_dates, index=len(available_dates) - 1)
+                sel_day = st.selectbox("Day", available_dates, index=len(available_dates) - 1, key="single_day_pick")
                 start_d, end_d = sel_day, sel_day
             else:
                 start_d, end_d = st.date_input(
@@ -172,13 +170,13 @@ with filter_col:
                     (min_d, max_d),
                     min_value=min_d,
                     max_value=max_d,
+                    key="range_pick",
                 )
                 if start_d > end_d:
                     start_d, end_d = end_d, start_d
 
-                group_by = st.selectbox("Group by", ["Day", "Week", "Month"], index=2)
+                group_by = st.selectbox("Group by", ["Day", "Week", "Month"], index=2, key="group_by_custom")
 
-    # (optional) remove later
     with st.expander("Debug (optional)", expanded=False):
         st.write(f"Status column used: **{STATUS_COL}**")
 
@@ -204,10 +202,9 @@ with content_col:
 
     st.divider()
 
-    # TOP: 2 charts
+    # TOP: Pie + Trend
     left, right = st.columns([1.05, 2.2], gap="large")
 
-    # PIE
     with left:
         st.subheader("Call Status")
         pie_counts = (
@@ -230,7 +227,6 @@ with content_col:
         fig_pie.update_layout(margin=dict(l=0, r=0, t=0, b=0), legend_title_text="")
         st.plotly_chart(fig_pie, use_container_width=True)
 
-    # TREND
     with right:
         title_customer = sel_customer if sel_customer != "(ALL)" else "(ALL)"
 
@@ -246,8 +242,12 @@ with content_col:
             by_status.columns = ["STATUS", "COUNT"]
             by_status = by_status[by_status["COUNT"] > 0]
 
-            fig_day = px.bar(by_status, x="STATUS", y="COUNT",
-                             category_orders={"STATUS": STATUS_ORDER + ["OTHER"]})
+            fig_day = px.bar(
+                by_status,
+                x="STATUS",
+                y="COUNT",
+                category_orders={"STATUS": STATUS_ORDER + ["OTHER"]},
+            )
             fig_day.update_layout(margin=dict(l=0, r=0, t=10, b=0), xaxis_title="", yaxis_title="")
             st.plotly_chart(fig_day, use_container_width=True)
 
@@ -267,11 +267,13 @@ with content_col:
                 .size()
                 .reset_index(name="COUNT")
             )
+
             trend["STATUS_STD"] = pd.Categorical(
                 trend["STATUS_STD"],
                 categories=STATUS_ORDER + ["OTHER"],
                 ordered=True,
             )
+
             trend = trend.sort_values(["PERIOD", "STATUS_STD"])
 
             fig_trend = px.bar(
@@ -292,7 +294,7 @@ with content_col:
 
     st.divider()
 
-    # BOTTOM: Technician (stacked)
+    # BOTTOM: Technician stacked (sorted by completion rate)
     st.subheader("Technician Performance (Stacked)")
 
     dff_tech = dff.dropna(subset=[TECH_COL]).copy()
@@ -305,13 +307,12 @@ with content_col:
         .reset_index(name="COUNT")
     )
 
-    # Sort by completion rate
     pivot = tech_counts.pivot_table(
         index=TECH_COL,
         columns="STATUS_STD",
         values="COUNT",
         aggfunc="sum",
-        fill_value=0
+        fill_value=0,
     )
     for c in STATUS_ORDER + ["OTHER"]:
         if c not in pivot.columns:
@@ -322,8 +323,7 @@ with content_col:
 
     tech_order = (
         pivot.sort_values(["COMPLETION_RATE", "COMPLETED"], ascending=[False, False])
-        .index
-        .tolist()
+        .index.tolist()
     )
 
     fig_tech = px.bar(
@@ -333,10 +333,7 @@ with content_col:
         color="STATUS_STD",
         orientation="h",
         barmode="stack",
-        category_orders={
-            TECH_COL: tech_order,
-            "STATUS_STD": STATUS_ORDER + ["OTHER"]
-        },
+        category_orders={TECH_COL: tech_order, "STATUS_STD": STATUS_ORDER + ["OTHER"]},
     )
     fig_tech.update_layout(
         margin=dict(l=0, r=0, t=10, b=0),
