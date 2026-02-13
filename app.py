@@ -102,22 +102,18 @@ with c1:
     st.plotly_chart(fig_pie, use_container_width=True)
 
 with c2:
-    # Default behavior:
-    # - if range spans 1 month -> Total (single bar)
-    # - else -> Month
-    default_mode = "Total" if months_span <= 1 else "Month"
-
-    mode_col, _ = st.columns([1, 3])
-    with mode_col:
-        trend_mode = st.selectbox(
-            "View",
-            ["Total", "Day", "Week", "Month"],
-            index=["Total", "Day", "Week", "Month"].index(default_mode),
-            key="trend_mode",
-            label_visibility="collapsed",
-        )
-
     st.subheader("Customer Trend (Stacked)")
+
+    # Put the dropdown ABOVE the legend (inside chart area)
+    # (We render dropdown first, then chart. Legend will appear beneath it on the page.)
+    default_mode = "Total" if months_span <= 1 else "Month"
+    trend_mode = st.selectbox(
+        "View",
+        ["Total", "Day", "Week", "Month"],
+        index=["Total", "Day", "Week", "Month"].index(default_mode),
+        key="trend_mode",
+        label_visibility="collapsed",
+    )
 
     # Build PERIOD based on dropdown
     if trend_mode == "Total":
@@ -139,7 +135,15 @@ with c2:
         color=STATUS_COL,
         barmode="stack",
     )
-    fig_stack.update_layout(xaxis_title="", yaxis_title="Count")
+
+    # Give a bit more top margin so the dropdown doesn’t feel cramped
+    fig_stack.update_layout(
+        xaxis_title="",
+        yaxis_title="Count",
+        margin=dict(t=40, r=10, l=10, b=10),
+        legend_title_text="STATUS",
+    )
+
     st.plotly_chart(fig_stack, use_container_width=True)
 
 # -------------------- TECHNICIAN (STACKED COLUMN) --------------------
@@ -158,10 +162,13 @@ else:
 
     tech_status = dff.groupby([TECH_COL, STATUS_COL]).size().reset_index(name="COUNT")
 
-    pivot = tech_status.pivot_table(index=TECH_COL, columns=STATUS_COL, values="COUNT", aggfunc="sum", fill_value=0)
+    pivot = tech_status.pivot_table(
+        index=TECH_COL, columns=STATUS_COL, values="COUNT", aggfunc="sum", fill_value=0
+    )
     for col in ["COMPLETED", "ATTENDED", "NOT ATTENDED"]:
         if col not in pivot.columns:
             pivot[col] = 0
+
     pivot["TOTAL"] = pivot.sum(axis=1)
     pivot["COMPLETION_RATE"] = (pivot["COMPLETED"] / pivot["TOTAL"]).where(pivot["TOTAL"] > 0, 0)
     pivot = pivot.sort_values(["COMPLETION_RATE", "TOTAL"], ascending=[False, False]).reset_index()
