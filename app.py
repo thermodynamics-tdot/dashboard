@@ -4,105 +4,118 @@ import plotly.express as px
 
 # -------------------- CONFIG --------------------
 st.set_page_config(page_title="Service Calls Dashboard", layout="wide")
+st.markdown("## Service Calls Dashboard")
 
 FILE_NAME = "CALL RECORDS 2026.xlsx"  # must be in repo root (same folder as app.py)
 
-# Your actual columns (from your screenshot)
+# Your columns (based on your screenshot list)
 DATE_COL = "DATE"
 CUSTOMER_COL = "CUSTOMER"
-STATUS_COL = "TECHNICIAN FEEDBACK"   # this is your status-like field
-TECH_COL = "TECH  1"                 # NOTE: two spaces between TECH and 1
+TECH_COL = "TECH  1"          # NOTE: two spaces between TECH and 1
 CALL_ID_COL = "TD REPORT NO."
 
-# The 3 statuses you want to visualize like Excel
+# ✅ IMPORTANT:
+# We will TRY to find the correct status column automatically.
+# It will prefer these columns in this order:
+STATUS_CANDIDATES = [
+    "STATUS",
+    "CALL STATUS",
+    "JOB STATUS",
+    "ACTION TAKEN",
+    "TECHNICIAN FEEDBACK",
+]
+
 STATUS_ORDER = ["ATTENDED", "COMPLETED", "NOT ATTENDED"]
-STATUS_CANON = {
-    "ATTENDED": "ATTENDED",
-    "COMPLETED": "COMPLETED",
-    "NOT ATTENDED": "NOT ATTENDED",
-    "NOTATTENDED": "NOT ATTENDED",
-    "NEED MATERIAL": "OTHER",
-    "RESCHEDULE": "OTHER",
-    "SCHEDULED": "OTHER",
-    "BLANK": "OTHER",
-    "": "OTHER",
-}
 
-# -------------------- LOAD --------------------
-@st.cache_data(ttl=300)
-def load_data():
-    df = pd.read_excel(FILE_NAME)
-    df.columns = [str(c).strip().upper() for c in df.columns]  # normalize headers
-    return df
 
-df = load_data()
+# -------------------- HELPERS --------------------
+def pick_col(cols, candidates):
+    cols_set = set(cols)
+    for c in candidates:
+        if c in cols_set:
+            return c
+    return None
 
-# Validate required columns
-required = [DATE_COL, CUSTOMER_COL, STATUS_COL, TECH_COL, CALL_ID_COL]
-missing = [c for c in required if c not in df.columns]
-if missing:
-    st.error(f"Missing columns in Excel: {', '.join(missing)}")
-    st.write("Available columns:", df.columns.tolist())
-    st.stop()
-
-# Clean + parse
-df[DATE_COL] = pd.to_datetime(df[DATE_COL], errors="coerce")
-df = df.dropna(subset=[DATE_COL]).copy()
-
-df[CUSTOMER_COL] = df[CUSTOMER_COL].astype(str).str.strip()
-df[TECH_COL] = df[TECH_COL].astype(str).str.strip()
-
-df[STATUS_COL] = (
-    df[STATUS_COL]
-    .fillna("BLANK")
-    .astype(str)
-    .str.strip()
-    .str.upper()
-)
 
 def canon_status(s: str) -> str:
     s = (s or "").strip().upper()
-    if s in STATUS_CANON:
-        return STATUS_CANON[s]
-    # If it contains the keywords, normalize
+
+    if s == "" or s == "BLANK":
+        return "OTHER"
+
+    # common patterns
     if "COMPLETE" in s:
         return "COMPLETED"
-    if "NOT" in s and "ATTEND" in s:
+    if ("NOT" in s and "ATTEND" in s) or ("NO" in s and "ATTEND" in s):
         return "NOT ATTENDED"
     if "ATTEND" in s:
         return "ATTENDED"
+
+    # sometimes written like "NEED MATERIAL", "RESCHEDULE", etc.
     return "OTHER"
 
+
+@st.cache_data(ttl=300)
+def load_data():
+    df = pd.read_excel(FILE_NAME)
+    df.columns = [str(c).strip().upper() for c in df.columns]
+    return df
+
+
+# -------------------- LOAD --------------------
+df = load_data()
+cols = df.columns.tolist()
+
+STATUS_COL = pick_col(cols, STATUS_CANDIDATES)
+
+required = [DATE_COL, CUSTOMER_COL, TECH_COL, CALL_ID_COL]
+missing = [c for c in required if c not in df.columns]
+if missing:
+    st.error(f"Missing columns in Excel: {', '.join(missing)}")
+    st.write("Available columns:", cols)
+    st.stop()
+
+if not STATUS_COL:
+    st.error("Could not find a Status column automatically.")
+    st.write("Available columns:", cols)
+    st.stop()
+
+# Parse date
+df[DATE_COL] = pd.to_datetime(df[DATE_COL], errors="coerce")
+df = df.dropna(subset=[DATE_COL]).copy()
+
+# Clean fields
+df[CUSTOMER_COL] = df[CUSTOMER_COL].astype(str).str.strip()
+df[TECH_COL] = df[TECH_COL].astype(str).str.strip()
+
+df[STATUS_COL] = df[STATUS_COL].fillna("").astype(str).str.strip().str.upper()
 df["STATUS_STD"] = df[STATUS_COL].map(canon_status)
 
-# -------------------- PAGE TITLE --------------------
-st.markdown("## Service Calls Dashboard")
+# Debug panel so you can SEE why it becomes OTHER (you can hide later)
+with st.expander("Debug (to fix status mapping)", expanded=True):
+    st.write(f"Using STATUS column: **{STATUS_COL}**")
+    st.write("Top values in that column (raw):")
+    st.dataframe(df[STATUS_COL].value_counts().head(30).reset_index().rename(columns={"index": STATUS_COL, STATUS_COL: "COUNT"}))
+    st.write("Mapped status counts (ATTENDED/COMPLETED/NOT ATTENDED/OTHER):")
+    st.dataframe(df["STATUS_STD"].value_counts().reset_index().rename(columns={"index": "STATUS_STD", "STATUS_STD": "COUNT"}))
 
-# -------------------- LAYOUT (MATCH EXCEL) --------------------
-# Left: Filters + Pie
-# Middle: Stacked monthly
-# Right: Technician performance
+# -------------------- FILTERS (TOP-LEFT LIKE EXCEL) --------------------
 left, mid, right = st.columns([1.05, 1.9, 1.35], gap="large")
 
-# ---------- LEFT COLUMN ----------
 with left:
-    # Date filter (top-left like Excel timeline)
     st.markdown("### DATE")
     min_d = df[DATE_COL].min().date()
     max_d = df[DATE_COL].max().date()
-
     d1, d2 = st.date_input(" ", (min_d, max_d))
-    if isinstance(d1, (list, tuple)):  # just in case
-        d1, d2 = d1[0], d1[1]
 
-    # Filter data by date
     mask = (df[DATE_COL].dt.date >= d1) & (df[DATE_COL].dt.date <= d2)
-    dff = df.loc[mask].copy()
+    dff_date = df.loc[mask].copy()
 
-    # Pie chart (below the date filter)
+    # -------------------- PIE (LEFT) --------------------
     st.markdown("### Call Status")
+
     pie_counts = (
-        dff["STATUS_STD"]
+        dff_date["STATUS_STD"]
         .value_counts()
         .reindex(STATUS_ORDER + ["OTHER"])
         .fillna(0)
@@ -115,40 +128,34 @@ with left:
         pie_counts,
         names="STATUS",
         values="COUNT",
-        hole=0.0,
         category_orders={"STATUS": STATUS_ORDER + ["OTHER"]},
     )
     fig_pie.update_traces(textposition="inside", textinfo="value+percent")
-    fig_pie.update_layout(
-        margin=dict(l=0, r=0, t=0, b=0),
-        legend_title_text="",
-    )
+    fig_pie.update_layout(margin=dict(l=0, r=0, t=0, b=0), legend_title_text="")
     st.plotly_chart(fig_pie, use_container_width=True)
 
-# ---------- MIDDLE COLUMN ----------
+# -------------------- CUSTOMER FILTER (MIDDLE TOP) --------------------
 with mid:
-    # Customer dropdown (top of middle like Excel customer filter)
     st.markdown("### CUSTOMER")
-    customers = ["(ALL)"] + sorted(dff[CUSTOMER_COL].dropna().unique().tolist())
+    customers = ["(ALL)"] + sorted(dff_date[CUSTOMER_COL].dropna().unique().tolist())
     sel_customer = st.selectbox(" ", customers, index=0)
 
-    dff_mid = dff.copy()
+    dff = dff_date.copy()
     if sel_customer != "(ALL)":
-        dff_mid = dff_mid[dff_mid[CUSTOMER_COL] == sel_customer].copy()
+        dff = dff[dff[CUSTOMER_COL] == sel_customer].copy()
 
     title_customer = sel_customer if sel_customer != "(ALL)" else "(ALL)"
     st.markdown(f"## {title_customer}")
 
-    # Monthly stacked chart (center)
-    dff_mid["MONTH"] = dff_mid[DATE_COL].dt.to_period("M").astype(str)
+    # -------------------- MONTHLY STACKED (CENTER) --------------------
+    dff["MONTH"] = dff[DATE_COL].dt.to_period("M").astype(str)
 
     monthly = (
-        dff_mid.groupby(["MONTH", "STATUS_STD"])
+        dff.groupby(["MONTH", "STATUS_STD"])
         .size()
         .reset_index(name="COUNT")
     )
 
-    # Keep order consistent
     monthly["STATUS_STD"] = pd.Categorical(
         monthly["STATUS_STD"],
         categories=STATUS_ORDER + ["OTHER"],
@@ -172,15 +179,14 @@ with mid:
     )
     st.plotly_chart(fig_stack, use_container_width=True)
 
-# ---------- RIGHT COLUMN ----------
+# -------------------- TECH PERFORMANCE (RIGHT) --------------------
 with right:
     st.markdown("### Technician Performance")
 
-    dff_right = dff_mid.copy()  # respects date + customer
-    dff_right = dff_right.dropna(subset=[TECH_COL]).copy()
-    dff_right = dff_right[dff_right[TECH_COL].str.strip().ne("")]
+    dff_right = dff.dropna(subset=[TECH_COL]).copy()
+    dff_right = dff_right[dff_right[TECH_COL].astype(str).str.strip().ne("")]
+    dff_right = dff_right[dff_right["STATUS_STD"].isin(STATUS_ORDER + ["OTHER"])]
 
-    # Counts per tech per status
     tech_counts = (
         dff_right.groupby([TECH_COL, "STATUS_STD"])
         .size()
@@ -202,7 +208,6 @@ with right:
     pivot["TOTAL"] = pivot[STATUS_ORDER + ["OTHER"]].sum(axis=1)
     pivot["COMPLETION_RATE"] = (pivot.get("COMPLETED", 0) / pivot["TOTAL"]).fillna(0)
 
-    # Sort by completion rate desc, then by completed count desc
     tech_order = (
         pivot.sort_values(["COMPLETION_RATE", "COMPLETED"], ascending=[False, False])
         .index
@@ -229,6 +234,6 @@ with right:
     )
     st.plotly_chart(fig_tech, use_container_width=True)
 
-# Optional: show data
+# -------------------- DATA TABLE (OPTIONAL) --------------------
 with st.expander("Show filtered rows"):
-    st.dataframe(dff_mid, use_container_width=True)
+    st.dataframe(dff, use_container_width=True)
