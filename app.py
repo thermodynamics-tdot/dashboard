@@ -104,30 +104,31 @@ with c1:
 with c2:
     st.subheader("Customer Trend (Stacked)")
 
-    # Put the dropdown ABOVE the legend (inside chart area)
-    # (We render dropdown first, then chart. Legend will appear beneath it on the page.)
+    # Two columns: chart left, legend+filter right
+    left_chart, right_panel = st.columns([4, 1.2], gap="large")
+
+    # Decide default view
     default_mode = "Total" if months_span <= 1 else "Month"
-    trend_mode = st.selectbox(
+    trend_mode = right_panel.selectbox(
         "View",
         ["Total", "Day", "Week", "Month"],
         index=["Total", "Day", "Week", "Month"].index(default_mode),
         key="trend_mode",
-        label_visibility="collapsed",
     )
 
-    # Build PERIOD based on dropdown
+    # Create PERIOD based on trend_mode
     if trend_mode == "Total":
         dff["PERIOD"] = "TOTAL"
     elif trend_mode == "Day":
         dff["PERIOD"] = dff[DATE_COL].dt.date.astype(str)
     elif trend_mode == "Week":
-        # Safe across pandas versions: ISO week label like 2026-W07
-        dff["PERIOD"] = dff[DATE_COL].dt.strftime("%G-W%V")
-    else:  # Month
+        dff["PERIOD"] = dff[DATE_COL].dt.strftime("%G-W%V")  # ISO week label
+    else:
         dff["PERIOD"] = dff[DATE_COL].dt.to_period("M").astype(str)
 
     period_status = dff.groupby(["PERIOD", STATUS_COL]).size().reset_index(name="COUNT")
 
+    # Build chart (legend OFF, we’ll render legend in the right panel)
     fig_stack = px.bar(
         period_status,
         x="PERIOD",
@@ -135,16 +136,30 @@ with c2:
         color=STATUS_COL,
         barmode="stack",
     )
-
-    # Give a bit more top margin so the dropdown doesn’t feel cramped
     fig_stack.update_layout(
         xaxis_title="",
         yaxis_title="Count",
-        margin=dict(t=40, r=10, l=10, b=10),
-        legend_title_text="STATUS",
+        showlegend=False,
+        margin=dict(t=20, r=10, l=10, b=10),
     )
 
-    st.plotly_chart(fig_stack, use_container_width=True)
+    left_chart.plotly_chart(fig_stack, use_container_width=True)
+
+    # Manual legend (right side)
+    # Keep the same status order used elsewhere
+    status_order = ["ATTENDED", "COMPLETED", "NOT ATTENDED", "BLANK"]
+    present = [s for s in status_order if s in period_status[STATUS_COL].unique().tolist()]
+    extras = [s for s in period_status[STATUS_COL].unique().tolist() if s not in present]
+    legend_items = present + extras
+
+    right_panel.markdown("**STATUS**")
+    for s in legend_items:
+        # little colored square using plotly default color mapping is hard to sync exactly,
+        # but this looks clean and readable.
+        right_panel.markdown(f"- {s}")
+
+    # This creates the spacing so the dropdown sits where you marked (under legend)
+    right_panel.markdown("<br><br><br>", unsafe_allow_html=True)
 
 # -------------------- TECHNICIAN (STACKED COLUMN) --------------------
 st.subheader("Technician Performance (Sorted by Completion Rate)")
