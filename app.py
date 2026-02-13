@@ -77,12 +77,13 @@ if sel_customer != "(All)":
 dff = df.loc[mask].copy()
 
 # Helpers
-def month_count_in_range(start_date, end_date):
-    start = pd.Timestamp(start_date).to_period("M")
-    end = pd.Timestamp(end_date).to_period("M")
-    return (end - start) + 1
+def months_in_range(start_date, end_date) -> int:
+    # Inclusive months count, stable and fast
+    sy, sm = start_date.year, start_date.month
+    ey, em = end_date.year, end_date.month
+    return (ey * 12 + em) - (sy * 12 + sm) + 1
 
-months_in_range = int(month_count_in_range(d1, d2))
+months_span = months_in_range(d1, d2)
 
 # -------------------- KPIs --------------------
 k1, k2, k3 = st.columns(3)
@@ -102,11 +103,10 @@ with c1:
     st.plotly_chart(fig_pie, use_container_width=True)
 
 with c2:
-    # Small dropdown near the chart (NOT in sidebar)
     # Default behavior:
     # - if range spans 1 month -> Total (single bar)
     # - else -> Month
-    default_mode = "Total" if months_in_range <= 1 else "Month"
+    default_mode = "Total" if months_span <= 1 else "Month"
 
     mode_col, _ = st.columns([1, 3])
     with mode_col:
@@ -122,7 +122,7 @@ with c2:
 
     # Build PERIOD based on dropdown
     if trend_mode == "Total":
-        dff["PERIOD"] = ["TOTAL"] * len(dff)
+        dff["PERIOD"] = "TOTAL"
     elif trend_mode == "Day":
         dff["PERIOD"] = dff[DATE_COL].dt.date.astype(str)
     elif trend_mode == "Week":
