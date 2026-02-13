@@ -6,7 +6,7 @@ import plotly.express as px
 st.set_page_config(page_title="Service Calls Dashboard", layout="wide")
 st.markdown("## Service Calls Dashboard")
 
-FILE_NAME = "CALL RECORDS 2026.xlsx"  # keep in same folder as app.py in your repo
+FILE_NAME = "CALL RECORDS 2026.xlsx"  # keep in repo root (same folder as app.py)
 
 # Your columns (from your Excel headers)
 DATE_COL = "DATE"
@@ -56,7 +56,6 @@ def make_period_col(df: pd.DataFrame, granularity: str) -> pd.Series:
     if granularity == "Day":
         return df[DATE_COL].dt.date.astype(str)
     if granularity == "Week":
-        # week start (Mon) label like 2026-02-10
         wk_start = df[DATE_COL].dt.to_period("W-MON").apply(lambda p: p.start_time.date())
         return wk_start.astype(str)
     # Month
@@ -102,29 +101,49 @@ df["STATUS_STD"] = df[STATUS_COL].map(canon_status)
 available_dates = sorted(df[DATE_COL].dt.date.unique())
 min_d, max_d = available_dates[0], available_dates[-1]
 
+# -------------------- RIGHT-SIDE FILTER PANEL --------------------
+# Make a "content + right panel" layout
+content_col, filter_col = st.columns([4.6, 1.4], gap="large")
 
-# -------------------- TOP CONTROLS --------------------
-c1, c2, c3 = st.columns([2.2, 2.2, 2.2])
+with filter_col:
+    with st.expander("Filters", expanded=True):
+        customers = ["(ALL)"] + sorted(df[CUSTOMER_COL].dropna().unique().tolist())
+        sel_customer = st.selectbox("Customer", customers, index=0)
 
-with c1:
-    customers = ["(ALL)"] + sorted(df[CUSTOMER_COL].dropna().unique().tolist())
-    sel_customer = st.selectbox("Customer", customers, index=0)
+        date_mode = st.radio("Date filter", ["Single day", "Range"], horizontal=False)
 
-with c2:
-    date_mode = st.radio("Date filter", ["Single day", "Range"], horizontal=True)
+        if date_mode == "Single day":
+            sel_day = st.selectbox(
+                "Select a date (available only)",
+                available_dates,
+                index=len(available_dates) - 1
+            )
+            start_d, end_d = sel_day, sel_day
+        else:
+            start_d, end_d = st.date_input(
+                "Select range",
+                (min_d, max_d),
+                min_value=min_d,
+                max_value=max_d
+            )
+            if start_d > end_d:
+                start_d, end_d = end_d, start_d
 
-with c3:
-    granularity = st.selectbox("Trend granularity", ["Day", "Week", "Month"], index=2)
+        granularity = st.selectbox("Trend granularity", ["Day", "Week", "Month"], index=2)
 
-# Date selection (only valid dates)
-if date_mode == "Single day":
-    sel_day = st.selectbox("Select a date (available dates only)", available_dates, index=len(available_dates) - 1)
-    start_d, end_d = sel_day, sel_day
-else:
-    start_d, end_d = st.date_input("Select range", (min_d, max_d), min_value=min_d, max_value=max_d)
-    # keep it safe
-    if start_d > end_d:
-        start_d, end_d = end_d, start_d
+    # Optional small debug expander (hide later)
+    with st.expander("Debug (optional)", expanded=False):
+        st.write(f"Using STATUS column: **{STATUS_COL}**")
+        st.write("Top raw values:")
+        st.dataframe(
+            df[STATUS_COL].value_counts().head(20).reset_index()
+            .rename(columns={"index": STATUS_COL, STATUS_COL: "COUNT"})
+        )
+        st.write("Mapped counts:")
+        st.dataframe(
+            df["STATUS_STD"].value_counts().reset_index()
+            .rename(columns={"index": "STATUS_STD", "STATUS_STD": "COUNT"})
+        )
 
 # -------------------- APPLY FILTERS --------------------
 mask = (df[DATE_COL].dt.date >= start_d) & (df[DATE_COL].dt.date <= end_d)
@@ -133,137 +152,138 @@ dff = df.loc[mask].copy()
 if sel_customer != "(ALL)":
     dff = dff[dff[CUSTOMER_COL] == sel_customer].copy()
 
-# -------------------- KPIs --------------------
-k1, k2, k3 = st.columns(3)
-total_calls = int(dff[CALL_ID_COL].nunique())
-k1.metric("Total Calls", total_calls)
-k2.metric("Completed", int((dff["STATUS_STD"] == "COMPLETED").sum()))
-k3.metric("Not Attended", int((dff["STATUS_STD"] == "NOT ATTENDED").sum()))
+# -------------------- DASHBOARD CONTENT --------------------
+with content_col:
+    # KPIs
+    k1, k2, k3 = st.columns(3)
+    total_calls = int(dff[CALL_ID_COL].nunique())
+    k1.metric("Total Calls", total_calls)
+    k2.metric("Completed", int((dff["STATUS_STD"] == "COMPLETED").sum()))
+    k3.metric("Not Attended", int((dff["STATUS_STD"] == "NOT ATTENDED").sum()))
 
-st.divider()
+    st.divider()
 
-# ==================== LAYOUT ====================
-# TOP: 2 charts (Pie + Trend)
-top_left, top_right = st.columns([1.05, 2.2], gap="large")
+    # TOP ROW: Pie + Trend
+    top_left, top_right = st.columns([1.05, 2.2], gap="large")
 
-# ---------- PIE ----------
-with top_left:
-    st.subheader("Call Status")
+    # Pie
+    with top_left:
+        st.subheader("Call Status")
 
-    pie_counts = (
-        dff["STATUS_STD"]
-        .value_counts()
-        .reindex(STATUS_ORDER + ["OTHER"])
-        .fillna(0)
-        .reset_index()
-    )
-    pie_counts.columns = ["STATUS", "COUNT"]
-    pie_counts = pie_counts[pie_counts["COUNT"] > 0]
+        pie_counts = (
+            dff["STATUS_STD"]
+            .value_counts()
+            .reindex(STATUS_ORDER + ["OTHER"])
+            .fillna(0)
+            .reset_index()
+        )
+        pie_counts.columns = ["STATUS", "COUNT"]
+        pie_counts = pie_counts[pie_counts["COUNT"] > 0]
 
-    fig_pie = px.pie(
-        pie_counts,
-        names="STATUS",
-        values="COUNT",
-        category_orders={"STATUS": STATUS_ORDER + ["OTHER"]},
-        hole=0.0,
-    )
-    fig_pie.update_traces(textposition="inside", textinfo="value+percent")
-    fig_pie.update_layout(margin=dict(l=0, r=0, t=0, b=0), legend_title_text="")
-    st.plotly_chart(fig_pie, use_container_width=True)
+        fig_pie = px.pie(
+            pie_counts,
+            names="STATUS",
+            values="COUNT",
+            category_orders={"STATUS": STATUS_ORDER + ["OTHER"]},
+            hole=0.0,
+        )
+        fig_pie.update_traces(textposition="inside", textinfo="value+percent")
+        fig_pie.update_layout(margin=dict(l=0, r=0, t=0, b=0), legend_title_text="")
+        st.plotly_chart(fig_pie, use_container_width=True)
 
-# ---------- TREND (STACKED) ----------
-with top_right:
-    title_customer = sel_customer if sel_customer != "(ALL)" else "(ALL)"
-    st.subheader(f"{title_customer} — Trend ({granularity})")
+    # Trend stacked
+    with top_right:
+        title_customer = sel_customer if sel_customer != "(ALL)" else "(ALL)"
+        st.subheader(f"{title_customer} — Trend ({granularity})")
 
-    dff["PERIOD"] = make_period_col(dff, granularity)
+        dff_trend = dff.copy()
+        dff_trend["PERIOD"] = make_period_col(dff_trend, granularity)
 
-    trend = (
-        dff.groupby(["PERIOD", "STATUS_STD"])
+        trend = (
+            dff_trend.groupby(["PERIOD", "STATUS_STD"])
+            .size()
+            .reset_index(name="COUNT")
+        )
+
+        trend["STATUS_STD"] = pd.Categorical(
+            trend["STATUS_STD"],
+            categories=STATUS_ORDER + ["OTHER"],
+            ordered=True,
+        )
+        trend = trend.sort_values(["PERIOD", "STATUS_STD"])
+
+        fig_trend = px.bar(
+            trend,
+            x="PERIOD",
+            y="COUNT",
+            color="STATUS_STD",
+            barmode="stack",
+            category_orders={"STATUS_STD": STATUS_ORDER + ["OTHER"]},
+        )
+        fig_trend.update_layout(
+            margin=dict(l=0, r=0, t=10, b=0),
+            legend_title_text="",
+            xaxis_title="",
+            yaxis_title="",
+        )
+        st.plotly_chart(fig_trend, use_container_width=True)
+
+    st.divider()
+
+    # BOTTOM: Technician stacked bars
+    st.subheader("Technician Performance (Stacked)")
+
+    dff_tech = dff.dropna(subset=[TECH_COL]).copy()
+    dff_tech = dff_tech[dff_tech[TECH_COL].astype(str).str.strip().ne("")]
+    dff_tech = dff_tech[dff_tech["STATUS_STD"].isin(STATUS_ORDER + ["OTHER"])]
+
+    tech_counts = (
+        dff_tech.groupby([TECH_COL, "STATUS_STD"])
         .size()
         .reset_index(name="COUNT")
     )
 
-    trend["STATUS_STD"] = pd.Categorical(
-        trend["STATUS_STD"],
-        categories=STATUS_ORDER + ["OTHER"],
-        ordered=True,
+    # Sort techs by completion rate (Completed / Total)
+    pivot = tech_counts.pivot_table(
+        index=TECH_COL,
+        columns="STATUS_STD",
+        values="COUNT",
+        aggfunc="sum",
+        fill_value=0
     )
-    trend = trend.sort_values(["PERIOD", "STATUS_STD"])
+    for c in STATUS_ORDER + ["OTHER"]:
+        if c not in pivot.columns:
+            pivot[c] = 0
 
-    fig_trend = px.bar(
-        trend,
-        x="PERIOD",
-        y="COUNT",
-        color="STATUS_STD",
-        barmode="stack",
-        category_orders={"STATUS_STD": STATUS_ORDER + ["OTHER"]},
+    pivot["TOTAL"] = pivot[STATUS_ORDER + ["OTHER"]].sum(axis=1)
+    pivot["COMPLETION_RATE"] = (pivot.get("COMPLETED", 0) / pivot["TOTAL"]).fillna(0)
+
+    tech_order = (
+        pivot.sort_values(["COMPLETION_RATE", "COMPLETED"], ascending=[False, False])
+        .index
+        .tolist()
     )
-    fig_trend.update_layout(
+
+    fig_tech = px.bar(
+        tech_counts,
+        y=TECH_COL,
+        x="COUNT",
+        color="STATUS_STD",
+        orientation="h",
+        barmode="stack",
+        category_orders={
+            TECH_COL: tech_order,
+            "STATUS_STD": STATUS_ORDER + ["OTHER"]
+        },
+    )
+    fig_tech.update_layout(
         margin=dict(l=0, r=0, t=10, b=0),
         legend_title_text="",
         xaxis_title="",
         yaxis_title="",
+        height=750,
     )
-    st.plotly_chart(fig_trend, use_container_width=True)
+    st.plotly_chart(fig_tech, use_container_width=True)
 
-st.divider()
-
-# BOTTOM: Technician chart (STACKED) full width
-st.subheader("Technician Performance (Stacked)")
-
-dff_tech = dff.dropna(subset=[TECH_COL]).copy()
-dff_tech = dff_tech[dff_tech[TECH_COL].astype(str).str.strip().ne("")]
-dff_tech = dff_tech[dff_tech["STATUS_STD"].isin(STATUS_ORDER + ["OTHER"])]
-
-tech_counts = (
-    dff_tech.groupby([TECH_COL, "STATUS_STD"])
-    .size()
-    .reset_index(name="COUNT")
-)
-
-# Sort techs by completion rate (Completed / Total)
-pivot = tech_counts.pivot_table(
-    index=TECH_COL,
-    columns="STATUS_STD",
-    values="COUNT",
-    aggfunc="sum",
-    fill_value=0
-)
-for c in STATUS_ORDER + ["OTHER"]:
-    if c not in pivot.columns:
-        pivot[c] = 0
-
-pivot["TOTAL"] = pivot[STATUS_ORDER + ["OTHER"]].sum(axis=1)
-pivot["COMPLETION_RATE"] = (pivot.get("COMPLETED", 0) / pivot["TOTAL"]).fillna(0)
-
-tech_order = (
-    pivot.sort_values(["COMPLETION_RATE", "COMPLETED"], ascending=[False, False])
-    .index
-    .tolist()
-)
-
-# Horizontal stacked bars = easiest to read with many technicians
-fig_tech = px.bar(
-    tech_counts,
-    y=TECH_COL,
-    x="COUNT",
-    color="STATUS_STD",
-    orientation="h",
-    barmode="stack",
-    category_orders={
-        TECH_COL: tech_order,
-        "STATUS_STD": STATUS_ORDER + ["OTHER"]
-    },
-)
-fig_tech.update_layout(
-    margin=dict(l=0, r=0, t=10, b=0),
-    legend_title_text="",
-    xaxis_title="",
-    yaxis_title="",
-    height=750,  # gives space for many names; adjust if needed
-)
-st.plotly_chart(fig_tech, use_container_width=True)
-
-with st.expander("Show filtered rows"):
-    st.dataframe(dff, use_container_width=True)
+    with st.expander("Show filtered rows"):
+        st.dataframe(dff, use_container_width=True)
