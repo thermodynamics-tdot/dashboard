@@ -78,7 +78,6 @@ dff = df.loc[mask].copy()
 
 # Helpers
 def months_in_range(start_date, end_date) -> int:
-    # Inclusive months count, stable and fast
     sy, sm = start_date.year, start_date.month
     ey, em = end_date.year, end_date.month
     return (ey * 12 + em) - (sy * 12 + sm) + 1
@@ -126,8 +125,8 @@ with c2:
     elif trend_mode == "Day":
         dff["PERIOD"] = dff[DATE_COL].dt.date.astype(str)
     elif trend_mode == "Week":
-        iso = dff[DATE_COL].dt.isocalendar()
-        dff["PERIOD"] = iso["YEAR"].astype(str) + "-W" + iso["WEEK"].astype(str).str.zfill(2)
+        # Safe across pandas versions: ISO week label like 2026-W07
+        dff["PERIOD"] = dff[DATE_COL].dt.strftime("%G-W%V")
     else:  # Month
         dff["PERIOD"] = dff[DATE_COL].dt.to_period("M").astype(str)
 
