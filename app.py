@@ -1,91 +1,161 @@
 import streamlit as st
 import pandas as pd
+import plotly.express as px
+import requests
+from io import BytesIO
 
-st.set_page_config(page_title="Service Dashboard", layout="wide")
-
-EXCEL_URL = st.secrets.get("EXCEL_URL", "")
-
-@st.cache_data(ttl=300)  # refresh every 5 minutes
-def load_data(url: str) -> pd.DataFrame:
-    if not url:
-        return pd.DataFrame()
-    df = pd.read_excel(url)
-    # normalize columns (adjust names to yours)
-    df.columns = [c.strip().upper() for c in df.columns]
-    return df
+# -------------------------------------------------
+# Page Config
+# -------------------------------------------------
+st.set_page_config(page_title="Service Calls Dashboard", layout="wide")
 
 st.title("Service Calls Dashboard")
 
+# -------------------------------------------------
+# Load Excel from SharePoint / OneDrive
+# -------------------------------------------------
+
+EXCEL_URL = st.secrets["EXCEL_URL"]
+
+@st.cache_data(ttl=300)  # refresh every 5 minutes
+def load_data(url):
+    try:
+        response = requests.get(url, allow_redirects=True, timeout=60)
+        response.raise_for_status()
+        return pd.read_excel(BytesIO(response.content))
+    except Exception as e:
+        st.error("Failed to load Excel file.")
+        st.stop()
+
 df = load_data(EXCEL_URL)
 
-if df.empty:
-    st.info("Set EXCEL_URL in Streamlit secrets to a direct-download .xlsx link.")
-    st.stop()
+# -------------------------------------------------
+# Data Preparation
+# -------------------------------------------------
 
-# ---- Adjust these to match your file column names ----
-DATE_COL = "DATE"
-CUSTOMER_COL = "CUSTOMER"
-STATUS_COL = "STATUS"
-TECH_COL = "TECH"  # or TECHNICIAN
-CALL_ID_COL = "TD REPORT NO"  # or Call Ref No / unique ID
-# -----------------------------------------------------
+# Ensure DATE column is datetime
+if "DATE" in df.columns:
+    df["DATE"] = pd.to_datetime(df["DATE"], errors="coerce")
 
-# Parse date
-df[DATE_COL] = pd.to_datetime(df[DATE_COL], errors="coerce")
-df = df.dropna(subset=[DATE_COL])
+# Drop rows without date
+df = df.dropna(subset=["DATE"])
 
-# Filters
-left, right = st.columns([2, 3])
+# Create Month column
+df["Month"] = df["DATE"].dt.strftime("%b")
 
-with left:
-    customers = ["(All)"] + sorted([c for c in df[CUSTOMER_COL].dropna().unique()])
-    sel_customer = st.selectbox("Customer", customers)
+# -------------------------------------------------
+# Sidebar Filters
+# -------------------------------------------------
 
-with right:
-    min_d, max_d = df[DATE_COL].min().date(), df[DATE_COL].max().date()
-    d1, d2 = st.date_input("Date range", (min_d, max_d))
+st.sidebar.header("Filters")
 
-mask = (df[DATE_COL].dt.date >= d1) & (df[DATE_COL].dt.date <= d2)
-if sel_customer != "(All)":
-    mask &= (df[CUSTOMER_COL] == sel_customer)
+# Date filter
+min_date = df["DATE"].min()
+max_date = df["DATE"].max()
 
-dff = df.loc[mask].copy()
+date_range = st.sidebar.date_input(
+    "Select Date Range",
+    [min_date, max_date]
+)
 
-# KPIs
-k1, k2, k3 = st.columns(3)
-k1.metric("Total Calls", int(dff[CALL_ID_COL].nunique() if CALL_ID_COL in dff else len(dff)))
-k2.metric("Completed", int((dff[STATUS_COL] == "COMPLETED").sum()))
-k3.metric("Not Attended", int((dff[STATUS_COL] == "NOT ATTENDED").sum()))
+# Customer filter
+if "CUSTOMER" in df.columns:
+    customers = ["All"] + sorted(df["CUSTOMER"].dropna().unique())
+    selected_customer = st.sidebar.selectbox("Select Customer", customers)
+else:
+    selected_customer = "All"
 
-c1, c2 = st.columns(2)
+# -------------------------------------------------
+# Apply Filters
+# -------------------------------------------------
 
-# Pie: status breakdown
-with c1:
-    st.subheader("Status Breakdown")
-    pie = dff[STATUS_COL].fillna("BLANK").value_counts().reset_index()
-    pie.columns = ["Status", "Count"]
-    st.plotly_chart(
-        {
-            "data": [{"type": "pie", "labels": pie["Status"], "values": pie["Count"]}],
-            "layout": {"margin": {"l": 10, "r": 10, "t": 10, "b": 10}},
-        },
-        use_container_width=True,
+filtered_df = df.copy()
+
+if len(date_range) == 2:
+    filtered_df = filtered_df[
+        (filtered_df["DATE"] >= pd.to_datetime(date_range[0])) &
+        (filtered_df["DATE"] <= pd.to_datetime(date_range[1]))
+    ]
+
+if selected_customer != "All":
+    filtered_df = filtered_df[filtered_df["CUSTOMER"] == selected_customer]
+
+# -------------------------------------------------
+# Layout
+# -------------------------------------------------
+
+col1, col2 = st.columns(2)
+
+# -------------------------------------------------
+# 1️⃣ Pie Chart - Call Status
+# -------------------------------------------------
+
+if "STATUS" in filtered_df.columns:
+
+    status_counts = filtered_df["STATUS"].value_counts().reset_index()
+    status_counts.columns = ["Status", "Count"]
+
+    fig_pie = px.pie(
+        status_counts,
+        names="Status",
+        values="Count",
+        title="Call Status Distribution"
     )
 
-# Stacked: status by technician (counts)
-with c2:
-    st.subheader("Technician Status (Stacked)")
-    piv = pd.crosstab(dff[TECH_COL].fillna("UNKNOWN"), dff[STATUS_COL].fillna("BLANK"))
-    st.bar_chart(piv)
+    col1.plotly_chart(fig_pie, use_container_width=True)
 
-st.divider()
+# -------------------------------------------------
+# 2️⃣ Stacked Column - Monthly Trend
+# -------------------------------------------------
 
-# Completion rate chart (ranked)
-st.subheader("Completion Rate by Technician (Ranked)")
-totals = dff.groupby(dff[TECH_COL].fillna("UNKNOWN")).size().rename("Total")
-completed = dff[dff[STATUS_COL] == "COMPLETED"].groupby(dff[TECH_COL].fillna("UNKNOWN")).size().rename("Completed")
-rate = pd.concat([totals, completed], axis=1).fillna(0)
-rate["CompletionRate"] = (rate["Completed"] / rate["Total"]).where(rate["Total"] > 0, 0)
-rate = rate.sort_values("CompletionRate", ascending=False)
+if "STATUS" in filtered_df.columns:
 
-st.dataframe(rate.reset_index().rename(columns={"index": "Technician"}), use_container_width=True)
+    month_status = (
+        filtered_df
+        .groupby(["Month", "STATUS"])
+        .size()
+        .reset_index(name="Count")
+    )
+
+    fig_bar = px.bar(
+        month_status,
+        x="Month",
+        y="Count",
+        color="STATUS",
+        title="Monthly Call Trend",
+        barmode="stack"
+    )
+
+    col2.plotly_chart(fig_bar, use_container_width=True)
+
+# -------------------------------------------------
+# 3️⃣ Technician Performance
+# -------------------------------------------------
+
+if "TECH 1" in filtered_df.columns and "STATUS" in filtered_df.columns:
+
+    tech_perf = (
+        filtered_df
+        .groupby(["TECH 1", "STATUS"])
+        .size()
+        .reset_index(name="Count")
+    )
+
+    fig_tech = px.bar(
+        tech_perf,
+        y="TECH 1",
+        x="Count",
+        color="STATUS",
+        orientation="h",
+        title="Technician Performance",
+        barmode="group"
+    )
+
+    st.plotly_chart(fig_tech, use_container_width=True)
+
+# -------------------------------------------------
+# Raw Data (Optional)
+# -------------------------------------------------
+
+with st.expander("View Raw Data"):
+    st.dataframe(filtered_df)
