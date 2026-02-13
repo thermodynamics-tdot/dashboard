@@ -8,21 +8,12 @@ st.markdown("## Service Calls Dashboard")
 
 FILE_NAME = "CALL RECORDS 2026.xlsx"  # keep in repo root (same folder as app.py)
 
-# Your columns (from your Excel headers)
 DATE_COL = "DATE"
 CUSTOMER_COL = "CUSTOMER"
-TECH_COL = "TECH  1"          # NOTE: two spaces between TECH and 1
+TECH_COL = "TECH  1"        # NOTE: two spaces between TECH and 1
 CALL_ID_COL = "TD REPORT NO."
 
-# Try to find the correct status column automatically
-STATUS_CANDIDATES = [
-    "STATUS",
-    "CALL STATUS",
-    "JOB STATUS",
-    "ACTION TAKEN",
-    "TECHNICIAN FEEDBACK",
-]
-
+STATUS_CANDIDATES = ["STATUS", "CALL STATUS", "JOB STATUS", "ACTION TAKEN", "TECHNICIAN FEEDBACK"]
 STATUS_ORDER = ["ATTENDED", "COMPLETED", "NOT ATTENDED"]
 
 
@@ -37,27 +28,68 @@ def pick_col(cols, candidates):
 
 def canon_status(s: str) -> str:
     s = (s or "").strip().upper()
-
     if s in ("", "BLANK", "NAN", "NONE"):
         return "OTHER"
-
     if "COMPLETE" in s:
         return "COMPLETED"
     if ("NOT" in s and "ATTEND" in s) or ("NO" in s and "ATTEND" in s):
         return "NOT ATTENDED"
     if "ATTEND" in s:
         return "ATTENDED"
-
     return "OTHER"
 
 
-def week_start_label(ts: pd.Series) -> pd.Series:
+def label_day(ts: pd.Series) -> pd.Series:
+    return ts.dt.date.astype(str)
+
+
+def label_week(ts: pd.Series) -> pd.Series:
+    # week start Monday
     wk_start = ts.dt.to_period("W-MON").apply(lambda p: p.start_time.date())
     return wk_start.astype(str)
 
 
-def month_label(ts: pd.Series) -> pd.Series:
+def label_month(ts: pd.Series) -> pd.Series:
     return ts.dt.to_period("M").astype(str)
+
+
+def apply_quick_range(mode: str, available_dates: list):
+    # returns (start_d, end_d)
+    min_d, max_d = available_dates[0], available_dates[-1]
+
+    if mode == "Today (last available)":
+        return max_d, max_d
+
+    if mode == "Last 7 days":
+        end_d = max_d
+        start_d = end_d - pd.Timedelta(days=6)
+        start_d = max(start_d.date(), min_d)
+        return start_d, end_d
+
+    if mode == "Last 30 days":
+        end_d = max_d
+        start_d = end_d - pd.Timedelta(days=29)
+        start_d = max(start_d.date(), min_d)
+        return start_d, end_d
+
+    if mode == "This month":
+        end_d = max_d
+        p = pd.Period(end_d, freq="M")
+        start_d = p.start_time.date()
+        if start_d < min_d:
+            start_d = min_d
+        return start_d, end_d
+
+    if mode == "This week":
+        end_d = max_d
+        p = pd.Period(end_d, freq="W-MON")
+        start_d = p.start_time.date()
+        if start_d < min_d:
+            start_d = min_d
+        return start_d, end_d
+
+    # All time
+    return min_d, max_d
 
 
 @st.cache_data(ttl=300)
@@ -70,7 +102,6 @@ def load_data():
 # -------------------- LOAD --------------------
 df = load_data()
 cols = df.columns.tolist()
-
 STATUS_COL = pick_col(cols, STATUS_CANDIDATES)
 
 required = [DATE_COL, CUSTOMER_COL, TECH_COL, CALL_ID_COL]
@@ -85,95 +116,72 @@ if not STATUS_COL:
     st.write("Available columns:", cols)
     st.stop()
 
-# Parse date + clean
 df[DATE_COL] = pd.to_datetime(df[DATE_COL], errors="coerce")
 df = df.dropna(subset=[DATE_COL]).copy()
 
 df[CUSTOMER_COL] = df[CUSTOMER_COL].astype(str).str.strip()
 df[TECH_COL] = df[TECH_COL].astype(str).str.strip()
-
 df[STATUS_COL] = df[STATUS_COL].fillna("").astype(str).str.strip().str.upper()
 df["STATUS_STD"] = df[STATUS_COL].map(canon_status)
 
-# Available dates only
 available_dates = sorted(df[DATE_COL].dt.date.unique())
 min_d, max_d = available_dates[0], available_dates[-1]
 
-# Build available week/month options (from actual data)
-df["_WEEK_START"] = df[DATE_COL].dt.to_period("W-MON").apply(lambda p: p.start_time.date())
-df["_MONTH"] = df[DATE_COL].dt.to_period("M").astype(str)
 
-available_weeks = sorted(df["_WEEK_START"].unique())
-available_months = sorted(df["_MONTH"].unique())
-
-
-# -------------------- RIGHT FILTER PANEL --------------------
-content_col, filter_col = st.columns([4.6, 1.4], gap="large")
+# -------------------- LAYOUT (CONTENT + RIGHT FILTER DRAWER) --------------------
+content_col, filter_col = st.columns([4.7, 1.3], gap="large")
 
 with filter_col:
+    # Most websites: a small "Filters" button or header, collapsible, with:
+    # - Customer dropdown
+    # - Date: Quick ranges + Custom range
+    # - Group by shown only for multi-day ranges
     with st.expander("Filters", expanded=True):
         customers = ["(ALL)"] + sorted(df[CUSTOMER_COL].dropna().unique().tolist())
         sel_customer = st.selectbox("Customer", customers, index=0)
 
-        # Most common website pattern: "Date" with quick modes
         st.markdown("**Date**")
-        date_mode = st.radio(
-            " ",
-            ["Single day", "Range", "This month (from data)", "This week (from data)"],
-            index=0,
-            label_visibility="collapsed",
-        )
 
-        # Defaults
-        start_d, end_d = max_d, max_d
-        trend_mode = "Day"  # used only for Range (Week/Month available)
+        tab_quick, tab_custom = st.tabs(["Quick", "Custom"])
 
-        if date_mode == "Single day":
-            sel_day = st.selectbox("Select day", available_dates, index=len(available_dates) - 1)
-            start_d, end_d = sel_day, sel_day
+        # defaults
+        start_d, end_d = min_d, max_d
+        group_by = "Month"
 
-        elif date_mode == "Range":
-            # Range picker + granularity shown ONLY here
-            start_d, end_d = st.date_input(
-                "Select range",
-                (min_d, max_d),
-                min_value=min_d,
-                max_value=max_d
+        with tab_quick:
+            quick = st.selectbox(
+                "Range",
+                ["Today (last available)", "Last 7 days", "Last 30 days", "This week", "This month", "All time"],
+                index=3,
             )
-            if start_d > end_d:
-                start_d, end_d = end_d, start_d
+            start_d, end_d = apply_quick_range(quick, available_dates)
 
-            trend_mode = st.segmented_control(
-                "Group by",
-                options=["Day", "Week", "Month"],
-                default="Month",
-            )
+            # If it's a single day, hide grouping
+            if start_d != end_d:
+                group_by = st.selectbox("Group by", ["Day", "Week", "Month"], index=2)
 
-        elif date_mode == "This month (from data)":
-            # Pick a month that exists in your file, then auto range it
-            sel_month = st.selectbox("Select month", available_months, index=len(available_months) - 1)
-            # Convert to start/end
-            p = pd.Period(sel_month, freq="M")
-            start_d = p.start_time.date()
-            end_d = p.end_time.date()
-            # clamp to available dates
-            if start_d < min_d: start_d = min_d
-            if end_d > max_d: end_d = max_d
+        with tab_custom:
+            mode = st.radio(" ", ["Single day", "Range"], horizontal=True, label_visibility="collapsed")
 
-        else:  # This week (from data)
-            sel_week = st.selectbox("Select week (Mon start)", available_weeks, index=len(available_weeks) - 1)
-            start_d = sel_week
-            end_d = (pd.Timestamp(sel_week) + pd.Timedelta(days=6)).date()
-            if start_d < min_d: start_d = min_d
-            if end_d > max_d: end_d = max_d
+            if mode == "Single day":
+                sel_day = st.selectbox("Day", available_dates, index=len(available_dates) - 1)
+                start_d, end_d = sel_day, sel_day
+            else:
+                start_d, end_d = st.date_input(
+                    "Pick dates",
+                    (min_d, max_d),
+                    min_value=min_d,
+                    max_value=max_d,
+                )
+                if start_d > end_d:
+                    start_d, end_d = end_d, start_d
 
+                group_by = st.selectbox("Group by", ["Day", "Week", "Month"], index=2)
+
+    # (optional) remove later
     with st.expander("Debug (optional)", expanded=False):
-        st.write(f"Using STATUS column: **{STATUS_COL}**")
-        st.write("Mapped counts:")
-        st.dataframe(
-            df["STATUS_STD"].value_counts().reset_index()
-            .rename(columns={"index": "STATUS_STD", "STATUS_STD": "COUNT"})
-        )
+        st.write(f"Status column used: **{STATUS_COL}**")
+
 
 # -------------------- APPLY FILTERS --------------------
 mask = (df[DATE_COL].dt.date >= start_d) & (df[DATE_COL].dt.date <= end_d)
@@ -182,7 +190,10 @@ dff = df.loc[mask].copy()
 if sel_customer != "(ALL)":
     dff = dff[dff[CUSTOMER_COL] == sel_customer].copy()
 
-# -------------------- DASHBOARD CONTENT --------------------
+single_day_mode = (start_d == end_d)
+
+
+# -------------------- CONTENT --------------------
 with content_col:
     # KPIs
     k1, k2, k3 = st.columns(3)
@@ -193,13 +204,12 @@ with content_col:
 
     st.divider()
 
-    # TOP ROW: Pie + Trend
-    top_left, top_right = st.columns([1.05, 2.2], gap="large")
+    # TOP: 2 charts
+    left, right = st.columns([1.05, 2.2], gap="large")
 
-    # ---------- PIE ----------
-    with top_left:
+    # PIE
+    with left:
         st.subheader("Call Status")
-
         pie_counts = (
             dff["STATUS_STD"]
             .value_counts()
@@ -220,12 +230,9 @@ with content_col:
         fig_pie.update_layout(margin=dict(l=0, r=0, t=0, b=0), legend_title_text="")
         st.plotly_chart(fig_pie, use_container_width=True)
 
-    # ---------- TREND ----------
-    with top_right:
+    # TREND
+    with right:
         title_customer = sel_customer if sel_customer != "(ALL)" else "(ALL)"
-
-        # If single day, show a simple message + counts by status (no trend grouping)
-        single_day_mode = (start_d == end_d)
 
         if single_day_mode:
             st.subheader(f"{title_customer} — {start_d}")
@@ -241,29 +248,19 @@ with content_col:
 
             fig_day = px.bar(by_status, x="STATUS", y="COUNT",
                              category_orders={"STATUS": STATUS_ORDER + ["OTHER"]})
-            fig_day.update_layout(margin=dict(l=0, r=0, t=10, b=0),
-                                  xaxis_title="", yaxis_title="", legend_title_text="")
+            fig_day.update_layout(margin=dict(l=0, r=0, t=10, b=0), xaxis_title="", yaxis_title="")
             st.plotly_chart(fig_day, use_container_width=True)
 
         else:
-            # For Range / Week / Month modes, build a trend
-            # Use trend_mode only when date_mode == Range, else pick Month/Week automatically
-            if date_mode == "Range":
-                group = trend_mode
-            elif date_mode == "This week (from data)":
-                group = "Day"   # week range -> day detail is useful
-            else:
-                group = "Week"  # month range -> week detail is useful
-
-            st.subheader(f"{title_customer} — Trend ({group})")
+            st.subheader(f"{title_customer} — Trend ({group_by})")
 
             dff_trend = dff.copy()
-            if group == "Day":
-                dff_trend["PERIOD"] = dff_trend[DATE_COL].dt.date.astype(str)
-            elif group == "Week":
-                dff_trend["PERIOD"] = week_start_label(dff_trend[DATE_COL])
+            if group_by == "Day":
+                dff_trend["PERIOD"] = label_day(dff_trend[DATE_COL])
+            elif group_by == "Week":
+                dff_trend["PERIOD"] = label_week(dff_trend[DATE_COL])
             else:
-                dff_trend["PERIOD"] = month_label(dff_trend[DATE_COL])
+                dff_trend["PERIOD"] = label_month(dff_trend[DATE_COL])
 
             trend = (
                 dff_trend.groupby(["PERIOD", "STATUS_STD"])
@@ -295,7 +292,7 @@ with content_col:
 
     st.divider()
 
-    # BOTTOM: Technician chart stacked
+    # BOTTOM: Technician (stacked)
     st.subheader("Technician Performance (Stacked)")
 
     dff_tech = dff.dropna(subset=[TECH_COL]).copy()
@@ -308,7 +305,7 @@ with content_col:
         .reset_index(name="COUNT")
     )
 
-    # Sort techs by completion rate (Completed / Total)
+    # Sort by completion rate
     pivot = tech_counts.pivot_table(
         index=TECH_COL,
         columns="STATUS_STD",
