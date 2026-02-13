@@ -51,15 +51,13 @@ def canon_status(s: str) -> str:
     return "OTHER"
 
 
-def make_period_col(df: pd.DataFrame, granularity: str) -> pd.Series:
-    # granularity: "Day" | "Week" | "Month"
-    if granularity == "Day":
-        return df[DATE_COL].dt.date.astype(str)
-    if granularity == "Week":
-        wk_start = df[DATE_COL].dt.to_period("W-MON").apply(lambda p: p.start_time.date())
-        return wk_start.astype(str)
-    # Month
-    return df[DATE_COL].dt.to_period("M").astype(str)
+def week_start_label(ts: pd.Series) -> pd.Series:
+    wk_start = ts.dt.to_period("W-MON").apply(lambda p: p.start_time.date())
+    return wk_start.astype(str)
+
+
+def month_label(ts: pd.Series) -> pd.Series:
+    return ts.dt.to_period("M").astype(str)
 
 
 @st.cache_data(ttl=300)
@@ -97,12 +95,19 @@ df[TECH_COL] = df[TECH_COL].astype(str).str.strip()
 df[STATUS_COL] = df[STATUS_COL].fillna("").astype(str).str.strip().str.upper()
 df["STATUS_STD"] = df[STATUS_COL].map(canon_status)
 
-# Only available dates in sheet
+# Available dates only
 available_dates = sorted(df[DATE_COL].dt.date.unique())
 min_d, max_d = available_dates[0], available_dates[-1]
 
-# -------------------- RIGHT-SIDE FILTER PANEL --------------------
-# Make a "content + right panel" layout
+# Build available week/month options (from actual data)
+df["_WEEK_START"] = df[DATE_COL].dt.to_period("W-MON").apply(lambda p: p.start_time.date())
+df["_MONTH"] = df[DATE_COL].dt.to_period("M").astype(str)
+
+available_weeks = sorted(df["_WEEK_START"].unique())
+available_months = sorted(df["_MONTH"].unique())
+
+
+# -------------------- RIGHT FILTER PANEL --------------------
 content_col, filter_col = st.columns([4.6, 1.4], gap="large")
 
 with filter_col:
@@ -110,16 +115,25 @@ with filter_col:
         customers = ["(ALL)"] + sorted(df[CUSTOMER_COL].dropna().unique().tolist())
         sel_customer = st.selectbox("Customer", customers, index=0)
 
-        date_mode = st.radio("Date filter", ["Single day", "Range"], horizontal=False)
+        # Most common website pattern: "Date" with quick modes
+        st.markdown("**Date**")
+        date_mode = st.radio(
+            " ",
+            ["Single day", "Range", "This month (from data)", "This week (from data)"],
+            index=0,
+            label_visibility="collapsed",
+        )
+
+        # Defaults
+        start_d, end_d = max_d, max_d
+        trend_mode = "Day"  # used only for Range (Week/Month available)
 
         if date_mode == "Single day":
-            sel_day = st.selectbox(
-                "Select a date (available only)",
-                available_dates,
-                index=len(available_dates) - 1
-            )
+            sel_day = st.selectbox("Select day", available_dates, index=len(available_dates) - 1)
             start_d, end_d = sel_day, sel_day
-        else:
+
+        elif date_mode == "Range":
+            # Range picker + granularity shown ONLY here
             start_d, end_d = st.date_input(
                 "Select range",
                 (min_d, max_d),
@@ -129,16 +143,32 @@ with filter_col:
             if start_d > end_d:
                 start_d, end_d = end_d, start_d
 
-        granularity = st.selectbox("Trend granularity", ["Day", "Week", "Month"], index=2)
+            trend_mode = st.segmented_control(
+                "Group by",
+                options=["Day", "Week", "Month"],
+                default="Month",
+            )
 
-    # Optional small debug expander (hide later)
+        elif date_mode == "This month (from data)":
+            # Pick a month that exists in your file, then auto range it
+            sel_month = st.selectbox("Select month", available_months, index=len(available_months) - 1)
+            # Convert to start/end
+            p = pd.Period(sel_month, freq="M")
+            start_d = p.start_time.date()
+            end_d = p.end_time.date()
+            # clamp to available dates
+            if start_d < min_d: start_d = min_d
+            if end_d > max_d: end_d = max_d
+
+        else:  # This week (from data)
+            sel_week = st.selectbox("Select week (Mon start)", available_weeks, index=len(available_weeks) - 1)
+            start_d = sel_week
+            end_d = (pd.Timestamp(sel_week) + pd.Timedelta(days=6)).date()
+            if start_d < min_d: start_d = min_d
+            if end_d > max_d: end_d = max_d
+
     with st.expander("Debug (optional)", expanded=False):
         st.write(f"Using STATUS column: **{STATUS_COL}**")
-        st.write("Top raw values:")
-        st.dataframe(
-            df[STATUS_COL].value_counts().head(20).reset_index()
-            .rename(columns={"index": STATUS_COL, STATUS_COL: "COUNT"})
-        )
         st.write("Mapped counts:")
         st.dataframe(
             df["STATUS_STD"].value_counts().reset_index()
@@ -166,7 +196,7 @@ with content_col:
     # TOP ROW: Pie + Trend
     top_left, top_right = st.columns([1.05, 2.2], gap="large")
 
-    # Pie
+    # ---------- PIE ----------
     with top_left:
         st.subheader("Call Status")
 
@@ -185,52 +215,87 @@ with content_col:
             names="STATUS",
             values="COUNT",
             category_orders={"STATUS": STATUS_ORDER + ["OTHER"]},
-            hole=0.0,
         )
         fig_pie.update_traces(textposition="inside", textinfo="value+percent")
         fig_pie.update_layout(margin=dict(l=0, r=0, t=0, b=0), legend_title_text="")
         st.plotly_chart(fig_pie, use_container_width=True)
 
-    # Trend stacked
+    # ---------- TREND ----------
     with top_right:
         title_customer = sel_customer if sel_customer != "(ALL)" else "(ALL)"
-        st.subheader(f"{title_customer} — Trend ({granularity})")
 
-        dff_trend = dff.copy()
-        dff_trend["PERIOD"] = make_period_col(dff_trend, granularity)
+        # If single day, show a simple message + counts by status (no trend grouping)
+        single_day_mode = (start_d == end_d)
 
-        trend = (
-            dff_trend.groupby(["PERIOD", "STATUS_STD"])
-            .size()
-            .reset_index(name="COUNT")
-        )
+        if single_day_mode:
+            st.subheader(f"{title_customer} — {start_d}")
+            by_status = (
+                dff["STATUS_STD"]
+                .value_counts()
+                .reindex(STATUS_ORDER + ["OTHER"])
+                .fillna(0)
+                .reset_index()
+            )
+            by_status.columns = ["STATUS", "COUNT"]
+            by_status = by_status[by_status["COUNT"] > 0]
 
-        trend["STATUS_STD"] = pd.Categorical(
-            trend["STATUS_STD"],
-            categories=STATUS_ORDER + ["OTHER"],
-            ordered=True,
-        )
-        trend = trend.sort_values(["PERIOD", "STATUS_STD"])
+            fig_day = px.bar(by_status, x="STATUS", y="COUNT",
+                             category_orders={"STATUS": STATUS_ORDER + ["OTHER"]})
+            fig_day.update_layout(margin=dict(l=0, r=0, t=10, b=0),
+                                  xaxis_title="", yaxis_title="", legend_title_text="")
+            st.plotly_chart(fig_day, use_container_width=True)
 
-        fig_trend = px.bar(
-            trend,
-            x="PERIOD",
-            y="COUNT",
-            color="STATUS_STD",
-            barmode="stack",
-            category_orders={"STATUS_STD": STATUS_ORDER + ["OTHER"]},
-        )
-        fig_trend.update_layout(
-            margin=dict(l=0, r=0, t=10, b=0),
-            legend_title_text="",
-            xaxis_title="",
-            yaxis_title="",
-        )
-        st.plotly_chart(fig_trend, use_container_width=True)
+        else:
+            # For Range / Week / Month modes, build a trend
+            # Use trend_mode only when date_mode == Range, else pick Month/Week automatically
+            if date_mode == "Range":
+                group = trend_mode
+            elif date_mode == "This week (from data)":
+                group = "Day"   # week range -> day detail is useful
+            else:
+                group = "Week"  # month range -> week detail is useful
+
+            st.subheader(f"{title_customer} — Trend ({group})")
+
+            dff_trend = dff.copy()
+            if group == "Day":
+                dff_trend["PERIOD"] = dff_trend[DATE_COL].dt.date.astype(str)
+            elif group == "Week":
+                dff_trend["PERIOD"] = week_start_label(dff_trend[DATE_COL])
+            else:
+                dff_trend["PERIOD"] = month_label(dff_trend[DATE_COL])
+
+            trend = (
+                dff_trend.groupby(["PERIOD", "STATUS_STD"])
+                .size()
+                .reset_index(name="COUNT")
+            )
+            trend["STATUS_STD"] = pd.Categorical(
+                trend["STATUS_STD"],
+                categories=STATUS_ORDER + ["OTHER"],
+                ordered=True,
+            )
+            trend = trend.sort_values(["PERIOD", "STATUS_STD"])
+
+            fig_trend = px.bar(
+                trend,
+                x="PERIOD",
+                y="COUNT",
+                color="STATUS_STD",
+                barmode="stack",
+                category_orders={"STATUS_STD": STATUS_ORDER + ["OTHER"]},
+            )
+            fig_trend.update_layout(
+                margin=dict(l=0, r=0, t=10, b=0),
+                legend_title_text="",
+                xaxis_title="",
+                yaxis_title="",
+            )
+            st.plotly_chart(fig_trend, use_container_width=True)
 
     st.divider()
 
-    # BOTTOM: Technician stacked bars
+    # BOTTOM: Technician chart stacked
     st.subheader("Technician Performance (Stacked)")
 
     dff_tech = dff.dropna(subset=[TECH_COL]).copy()
