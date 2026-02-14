@@ -2,226 +2,221 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 
-# Try to enable click events (optional)
-try:
-    from streamlit_plotly_events import plotly_events
-    HAS_EVENTS = True
-except Exception:
-    HAS_EVENTS = False
-
 st.set_page_config(page_title="Service Calls Dashboard", layout="wide")
 st.title("Service Calls Dashboard")
 
-FILE_NAME = "CALL RECORDS 2026.xlsx"
+# =========================
+# CONFIG (match your file)
+# =========================
+FILE_NAME = "CALL RECORDS 2026.xlsx"   # must exist in repo root
 
 DATE_COL = "DATE"
 CUSTOMER_COL = "CUSTOMER"
-STATUS_COL = "CALL STATUS"
-TECH_COL = "TECH 1"
 CALL_ID_COL = "TD REPORT NO."
+TECH1_COL = "TECH 1"
+TECH2_COL = "TECH 2"
+TIME_OUT_COL = "TIME OUT"
 
+# =====================================
+# Load + clean
+# =====================================
 @st.cache_data(ttl=300)
 def load_data():
     df = pd.read_excel(FILE_NAME)
-    df.columns = [" ".join(str(c).strip().upper().split()) for c in df.columns]
+    # normalize column names
+    df.columns = [c.strip().upper() for c in df.columns]
+
+    # Parse date
+    if DATE_COL in df.columns:
+        df[DATE_COL] = pd.to_datetime(df[DATE_COL], errors="coerce")
+        df = df.dropna(subset=[DATE_COL])
+
+    # Ensure required cols exist
+    for c in [CUSTOMER_COL, CALL_ID_COL, TECH1_COL, TECH2_COL, TIME_OUT_COL]:
+        if c not in df.columns:
+            df[c] = None
+
+    # Clean strings
+    for c in [CUSTOMER_COL, CALL_ID_COL, TECH1_COL, TECH2_COL, TIME_OUT_COL]:
+        df[c] = df[c].astype(str).str.strip()
+        df.loc[df[c].isin(["nan", "NaN", "None", "NaT"]), c] = ""
+
+    # ---- Derive STATUS (because your file has no CALL STATUS column)
+    def derive_status(row):
+        if row[TIME_OUT_COL] != "":
+            return "COMPLETED"
+        elif row[TECH1_COL] != "":
+            return "ATTENDED"
+        else:
+            return "NOT ATTENDED"
+
+    df["STATUS"] = df.apply(derive_status, axis=1)
+
     return df
 
 df = load_data()
 
-# Validate required columns
-missing = [c for c in [DATE_COL, CUSTOMER_COL, STATUS_COL] if c not in df.columns]
-if missing:
-    st.error(f"Missing columns in Excel: {', '.join(missing)}")
-    st.write("Available columns:", list(df.columns))
-    st.stop()
-
-df[DATE_COL] = pd.to_datetime(df[DATE_COL], errors="coerce")
-df = df.dropna(subset=[DATE_COL]).copy()
-
-df[STATUS_COL] = df[STATUS_COL].astype(str).str.strip().str.upper().replace({"NAN": "BLANK", "": "BLANK"})
-df.loc[df[STATUS_COL].isin(["NONE", "NULL"]), STATUS_COL] = "BLANK"
-
-# Sidebar (filters)
+# =====================================
+# Filters (left sidebar)
+# =====================================
 st.sidebar.header("Filters")
-
-customers = ["(All)"] + sorted(df[CUSTOMER_COL].dropna().astype(str).unique().tolist())
-sel_customer = st.sidebar.selectbox("Customer", customers, index=0)
 
 min_d = df[DATE_COL].min().date()
 max_d = df[DATE_COL].max().date()
+
 d1, d2 = st.sidebar.date_input("Date range", (min_d, max_d))
+
+customers = ["(All)"] + sorted([c for c in df[CUSTOMER_COL].dropna().unique().tolist() if c != ""])
+sel_customer = st.sidebar.selectbox("Customer", customers)
 
 mask = (df[DATE_COL].dt.date >= d1) & (df[DATE_COL].dt.date <= d2)
 if sel_customer != "(All)":
-    mask &= (df[CUSTOMER_COL].astype(str) == sel_customer)
+    mask &= (df[CUSTOMER_COL] == sel_customer)
 
 dff = df.loc[mask].copy()
 
+# =====================================
 # KPIs
+# =====================================
 k1, k2, k3 = st.columns(3)
+
 total_calls = dff[CALL_ID_COL].nunique() if CALL_ID_COL in dff.columns else len(dff)
+completed = (dff["STATUS"] == "COMPLETED").sum()
+not_attended = (dff["STATUS"] == "NOT ATTENDED").sum()
+
 k1.metric("Total Calls", int(total_calls))
-k2.metric("Completed", int((dff[STATUS_COL] == "COMPLETED").sum()))
-k3.metric("Not Attended", int((dff[STATUS_COL] == "NOT ATTENDED").sum()))
+k2.metric("Completed", int(completed))
+k3.metric("Not Attended", int(not_attended))
 
-# Selection state for filtering table
-if "selection" not in st.session_state:
-    st.session_state.selection = {"source": None, "status": None, "period": None, "trend_mode": None}
+# =====================================
+# Top charts (2 columns)
+# =====================================
+left, right = st.columns([1, 1])
 
-def clear_selection():
-    st.session_state.selection = {"source": None, "status": None, "period": None, "trend_mode": None}
-
-# Top charts
-left, right = st.columns(2, gap="large")
-
-# ---- Pie (click to filter table)
+# ---- Pie: Call Status
 with left:
     st.subheader("Call Status")
-    status_counts = dff[STATUS_COL].value_counts().reset_index()
+
+    status_counts = dff["STATUS"].fillna("BLANK").replace("", "BLANK").value_counts().reset_index()
     status_counts.columns = ["STATUS", "COUNT"]
 
-    fig_pie = px.pie(status_counts, names="STATUS", values="COUNT")
-    fig_pie.update_layout(margin=dict(l=10, r=10, t=10, b=10))
-
-    if HAS_EVENTS:
-        pie_click = plotly_events(
-            fig_pie,
-            click_event=True,
-            hover_event=False,
-            select_event=False,
-            override_height=520,
-            key="pie_events",
-        )
-        if pie_click:
-            picked_status = pie_click[0].get("label")
-            if picked_status:
-                st.session_state.selection = {"source": "pie", "status": picked_status, "period": None, "trend_mode": None}
-    else:
-        st.plotly_chart(fig_pie, use_container_width=True)
-        st.info("Click-to-filter is disabled because 'streamlit-plotly-events' is not installed.")
-
-# ---- Customer trend (click to filter table)
-with right:
-    title = "All Customers" if sel_customer == "(All)" else sel_customer
-    st.subheader(title)
-
-    # default view
-    trend_mode = st.selectbox("View", ["Total", "Day", "Week", "Month"], index=0, key="trend_mode_ui")
-
-    tmp = dff.copy()
-    if trend_mode == "Total":
-        tmp["PERIOD"] = "All"
-        ticktext = ["All"]
-        tickvals = ["All"]
-        xorder = ["All"]
-    elif trend_mode == "Day":
-        tmp["PERIOD"] = tmp[DATE_COL].dt.date.astype(str)
-        xorder = sorted(tmp["PERIOD"].unique())
-        tickvals = xorder
-        ticktext = xorder
-    elif trend_mode == "Week":
-        iso = tmp[DATE_COL].dt.isocalendar()
-        tmp["PERIOD"] = iso["year"].astype(str) + "-W" + iso["week"].astype(int).astype(str).str.zfill(2)
-        xorder = sorted(tmp["PERIOD"].unique())
-        tickvals = xorder
-        ticktext = xorder
-    else:
-        tmp["PERIOD"] = tmp[DATE_COL].dt.to_period("M").astype(str)  # YYYY-MM
-        xorder = sorted(tmp["PERIOD"].unique())
-        tickvals = xorder
-        ticktext = [pd.to_datetime(p + "-01").strftime("%b") for p in xorder]  # Jan, Feb
-
-    grp = tmp.groupby(["PERIOD", STATUS_COL]).size().reset_index(name="COUNT")
-
-    fig_stack = px.bar(grp, x="PERIOD", y="COUNT", color=STATUS_COL, barmode="stack")
-    fig_stack.update_layout(margin=dict(l=10, r=10, t=10, b=10))
-    fig_stack.update_xaxes(tickmode="array", tickvals=tickvals, ticktext=ticktext, title_text="")
-    fig_stack.update_yaxes(title_text="Count")
-
-    if HAS_EVENTS:
-        trend_click = plotly_events(
-            fig_stack,
-            click_event=True,
-            hover_event=False,
-            select_event=False,
-            override_height=520,
-            key="trend_events",
-        )
-        if trend_click:
-            picked_period = trend_click[0].get("x")
-            curve_idx = trend_click[0].get("curveNumber", None)
-
-            # Map curve index to a status label (best-effort)
-            status_list = list(grp[STATUS_COL].dropna().unique())
-            picked_status = status_list[curve_idx] if (curve_idx is not None and curve_idx < len(status_list)) else None
-
-            st.session_state.selection = {
-                "source": "trend",
-                "status": picked_status,
-                "period": picked_period,
-                "trend_mode": trend_mode,
-            }
-    else:
-        st.plotly_chart(fig_stack, use_container_width=True)
-
-# Technician performance (stacked row)
-st.subheader("Technician Performance (Sorted by Completion Rate)")
-
-if TECH_COL in dff.columns:
-    tech_df = dff.copy()
-    tech_df[TECH_COL] = tech_df[TECH_COL].astype(str).str.strip()
-    tech_df.loc[tech_df[TECH_COL].isin(["", "NAN", "NONE", "NULL"]), TECH_COL] = "BLANK"
-
-    tech_counts = tech_df.groupby([TECH_COL, STATUS_COL]).size().reset_index(name="COUNT")
-
-    totals = tech_counts.groupby(TECH_COL)["COUNT"].sum().rename("TOTAL")
-    completed = tech_counts.loc[tech_counts[STATUS_COL] == "COMPLETED"].groupby(TECH_COL)["COUNT"].sum().rename("COMPLETED")
-    rates = pd.concat([totals, completed], axis=1).fillna(0)
-    rates["COMP_RATE"] = rates["COMPLETED"] / rates["TOTAL"].where(rates["TOTAL"] != 0, 1)
-    order = rates.sort_values("COMP_RATE", ascending=False).index.tolist()
-
-    fig_tech = px.bar(
-        tech_counts,
-        y=TECH_COL,
-        x="COUNT",
-        color=STATUS_COL,
-        barmode="stack",
-        orientation="h",
-        category_orders={TECH_COL: order},
+    fig_pie = px.pie(
+        status_counts,
+        names="STATUS",
+        values="COUNT",
+        hole=0
     )
-    st.plotly_chart(fig_tech, use_container_width=True)
+    fig_pie.update_traces(textposition="inside", textinfo="percent+value")
+    st.plotly_chart(fig_pie, use_container_width=True)
 
-st.divider()
+# ---- Customer Trend (Stacked) with "View" control placed near legend area
+with right:
+    heading = "All Customers" if sel_customer == "(All)" else sel_customer
+    st.subheader(heading)
 
-c1, c2 = st.columns([1, 4])
-with c1:
-    st.button("Clear chart selection", on_click=clear_selection)
+    # Place the view selector above legend area (right side)
+    view_cols = st.columns([0.65, 0.35])
+    with view_cols[1]:
+        view_mode = st.selectbox("View", ["Total", "Day", "Week", "Month"], index=3, key="cust_view")
 
-st.markdown("### Data (click a chart to filter)")
+    # Build period column based on view
+    dff["_DATE"] = pd.to_datetime(dff[DATE_COL], errors="coerce")
 
-filtered = dff.copy()
-sel = st.session_state.selection
+    if view_mode == "Total":
+        dff["PERIOD"] = "Total"
+        x_order = ["Total"]
+    elif view_mode == "Day":
+        dff["PERIOD"] = dff["_DATE"].dt.strftime("%Y-%m-%d")
+        x_order = None
+    elif view_mode == "Week":
+        # ISO week safely
+        iso = dff["_DATE"].dt.isocalendar()
+        dff["PERIOD"] = iso["YEAR"].astype(str) + "-W" + iso["WEEK"].astype(int).astype(str).str.zfill(2)
+        x_order = None
+    else:  # Month
+        dff["PERIOD"] = dff["_DATE"].dt.strftime("%b %Y")  # Jan 2026, Feb 2026
+        # keep chronological order
+        month_order = (
+            dff[["_DATE"]].assign(M=dff["_DATE"].dt.to_period("M").astype(str))
+            .drop_duplicates()["M"].tolist()
+        )
+        # Convert "YYYY-MM" to "Mon YYYY" in same order
+        month_order_labels = []
+        for m in month_order:
+            y, mo = m.split("-")
+            dt = pd.to_datetime(f"{y}-{mo}-01")
+            month_order_labels.append(dt.strftime("%b %Y"))
+        x_order = month_order_labels
 
-if sel["source"] == "pie" and sel["status"]:
-    filtered = filtered[filtered[STATUS_COL] == sel["status"]]
-    st.caption(f"Filtered by Pie click → STATUS = **{sel['status']}**")
+    cust_trend = (
+        dff.groupby(["PERIOD", "STATUS"])
+        .size()
+        .reset_index(name="COUNT")
+    )
 
-elif sel["source"] == "trend":
-    if sel["status"]:
-        filtered = filtered[filtered[STATUS_COL] == sel["status"]]
-    if sel["period"]:
-        mode = sel.get("trend_mode")
-        if mode == "Day":
-            filtered = filtered[filtered[DATE_COL].dt.date.astype(str) == str(sel["period"])]
-        elif mode == "Week":
-            iso = filtered[DATE_COL].dt.isocalendar()
-            wk = iso["year"].astype(str) + "-W" + iso["week"].astype(int).astype(str).str.zfill(2)
-            filtered = filtered[wk == str(sel["period"])]
-        elif mode == "Month":
-            mo = filtered[DATE_COL].dt.to_period("M").astype(str)
-            filtered = filtered[mo == str(sel["period"])]
-        # Total: no extra filter
+    fig_cust = px.bar(
+        cust_trend,
+        x="PERIOD",
+        y="COUNT",
+        color="STATUS",
+        barmode="stack",
+        category_orders={"PERIOD": x_order} if x_order else None,
+    )
 
-    st.caption("Filtered by Trend click")
+    # Make legend style similar to pie (simple list on right)
+    fig_cust.update_layout(
+        legend_title_text="STATUS",
+        legend=dict(orientation="v", x=1.02, y=0.9),
+        margin=dict(l=10, r=160, t=10, b=40)
+    )
 
-st.dataframe(filtered, use_container_width=True)
+    st.plotly_chart(fig_cust, use_container_width=True)
+
+# =====================================
+# Technician Performance (STACKED ROW chart)
+# =====================================
+st.subheader("Technician Performance (Stacked)")
+
+# Use TECH 1 primarily; fallback to TECH 2 if TECH 1 empty
+tech_series = dff[TECH1_COL].replace("", pd.NA)
+tech_series = tech_series.fillna(dff[TECH2_COL].replace("", pd.NA))
+dff["TECH"] = tech_series.fillna("BLANK")
+
+tech_status = (
+    dff.groupby(["TECH", "STATUS"])
+    .size()
+    .reset_index(name="COUNT")
+)
+
+# Order techs by completed count (desc)
+completed_by_tech = (
+    tech_status[tech_status["STATUS"] == "COMPLETED"]
+    .set_index("TECH")["COUNT"]
+    .to_dict()
+)
+tech_order = sorted(tech_status["TECH"].unique(), key=lambda t: completed_by_tech.get(t, 0), reverse=True)
+
+fig_tech = px.bar(
+    tech_status,
+    y="TECH",
+    x="COUNT",
+    color="STATUS",
+    barmode="stack",
+    category_orders={"TECH": tech_order},
+    orientation="h"
+)
+
+fig_tech.update_layout(
+    legend_title_text="STATUS",
+    legend=dict(orientation="v", x=1.02, y=0.95),
+    margin=dict(l=10, r=160, t=10, b=10),
+    yaxis_title=""
+)
+
+st.plotly_chart(fig_tech, use_container_width=True)
+
+# =====================================
+# Show data (still full table for now)
+# =====================================
+with st.expander("Show data"):
+    st.dataframe(dff.drop(columns=["_DATE"], errors="ignore"), use_container_width=True)
