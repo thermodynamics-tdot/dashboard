@@ -2,221 +2,294 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 
+# -------------------- Page --------------------
 st.set_page_config(page_title="Service Calls Dashboard", layout="wide")
-st.title("Service Calls Dashboard")
 
-# =========================
-# CONFIG (match your file)
-# =========================
-FILE_NAME = "CALL RECORDS 2026.xlsx"   # must exist in repo root
+# -------------------- Config --------------------
+FILE_NAME = "CALL RECORDS 2026.xlsx"  # in repo root
 
 DATE_COL = "DATE"
 CUSTOMER_COL = "CUSTOMER"
+STATUS_COL = "CALL STATUS"          # your file uses "Call Status"
+TECH_COL = "TECH 1"
 CALL_ID_COL = "TD REPORT NO."
-TECH1_COL = "TECH 1"
-TECH2_COL = "TECH 2"
-TIME_OUT_COL = "TIME OUT"
 
-# =====================================
-# Load + clean
-# =====================================
+# -------------------- Helpers --------------------
 @st.cache_data(ttl=300)
 def load_data():
     df = pd.read_excel(FILE_NAME)
-    # normalize column names
-    df.columns = [c.strip().upper() for c in df.columns]
-
-    # Parse date
-    if DATE_COL in df.columns:
-        df[DATE_COL] = pd.to_datetime(df[DATE_COL], errors="coerce")
-        df = df.dropna(subset=[DATE_COL])
-
-    # Ensure required cols exist
-    for c in [CUSTOMER_COL, CALL_ID_COL, TECH1_COL, TECH2_COL, TIME_OUT_COL]:
-        if c not in df.columns:
-            df[c] = None
-
-    # Clean strings
-    for c in [CUSTOMER_COL, CALL_ID_COL, TECH1_COL, TECH2_COL, TIME_OUT_COL]:
-        df[c] = df[c].astype(str).str.strip()
-        df.loc[df[c].isin(["nan", "NaN", "None", "NaT"]), c] = ""
-
-    # ---- Derive STATUS (because your file has no CALL STATUS column)
-    def derive_status(row):
-        if row[TIME_OUT_COL] != "":
-            return "COMPLETED"
-        elif row[TECH1_COL] != "":
-            return "ATTENDED"
-        else:
-            return "NOT ATTENDED"
-
-    df["STATUS"] = df.apply(derive_status, axis=1)
-
+    df.columns = [" ".join(str(c).strip().upper().split()) for c in df.columns]
     return df
 
+def ensure_col(df, want):
+    want_n = " ".join(want.strip().upper().split())
+    if want_n in df.columns:
+        return want_n
+    aliases = {
+        "CALL STATUS": ["STATUS", "CALLSTATUS", "CALL_STATUS"],
+        "TECH 1": ["TECH1", "TECH  1", "TECHNICIAN", "TECH"],
+        "TD REPORT NO.": ["TD REPORT NO", "TD_REPORT_NO", "REPORT NO", "REPORT NO."],
+    }
+    for a in aliases.get(want_n, []):
+        a_n = " ".join(a.strip().upper().split())
+        if a_n in df.columns:
+            return a_n
+    return None
+
+def status_palette(statuses):
+    # simple stable palette (you can change later)
+    base = {
+        "COMPLETED": "#0068C9",
+        "ATTENDED": "#83C9FF",
+        "NOT ATTENDED": "#FF2B2B",
+        "BLANK": "#FFABAB",
+        "(BLANK)": "#FFABAB",
+        "OTHER": "#999999",
+    }
+    return {s: base.get(s, "#666666") for s in statuses}
+
+def render_custom_legend(statuses, colors, title=""):
+    if title:
+        st.markdown(f"**{title}**")
+    for s in statuses:
+        c = colors.get(s, "#666")
+        st.markdown(
+            f"""
+            <div style="display:flex;align-items:center;gap:10px;margin:6px 0;">
+              <span style="width:12px;height:12px;background:{c};display:inline-block;border-radius:2px;"></span>
+              <span style="font-size:14px;">{s}</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+# -------------------- Load --------------------
 df = load_data()
 
-# =====================================
-# Filters (left sidebar)
-# =====================================
-st.sidebar.header("Filters")
+DATE_COL = ensure_col(df, DATE_COL) or DATE_COL
+CUSTOMER_COL = ensure_col(df, CUSTOMER_COL) or CUSTOMER_COL
+STATUS_COL = ensure_col(df, STATUS_COL) or STATUS_COL
+TECH_COL = ensure_col(df, TECH_COL) or TECH_COL
+CALL_ID_COL = ensure_col(df, CALL_ID_COL) or CALL_ID_COL
 
-min_d = df[DATE_COL].min().date()
-max_d = df[DATE_COL].max().date()
+missing = [c for c in [DATE_COL, CUSTOMER_COL, STATUS_COL] if c not in df.columns]
+if missing:
+    st.error(f"Missing columns in Excel: {', '.join(missing)}")
+    st.write("Available columns:", list(df.columns))
+    st.stop()
 
-d1, d2 = st.sidebar.date_input("Date range", (min_d, max_d))
+# Parse date
+df[DATE_COL] = pd.to_datetime(df[DATE_COL], errors="coerce")
+df = df.dropna(subset=[DATE_COL]).copy()
 
-customers = ["(All)"] + sorted([c for c in df[CUSTOMER_COL].dropna().unique().tolist() if c != ""])
-sel_customer = st.sidebar.selectbox("Customer", customers)
+# Clean status
+df[STATUS_COL] = df[STATUS_COL].astype(str).str.strip().str.upper().replace({"NAN": "BLANK", "": "BLANK"})
+df.loc[df[STATUS_COL].isin(["NONE", "NULL"]), STATUS_COL] = "BLANK"
 
+# -------------------- Sidebar (wider) --------------------
+st.markdown(
+    """
+    <style>
+      section[data-testid="stSidebar"] { width: 340px !important; }
+      section[data-testid="stSidebar"] > div { width: 340px !important; }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+with st.sidebar:
+    st.markdown("## Filters")
+
+    customers = ["(All)"] + sorted(df[CUSTOMER_COL].dropna().astype(str).unique().tolist())
+    sel_customer = st.selectbox("Customer", customers, index=0, key="customer_filter")
+
+    min_d = df[DATE_COL].min().date()
+    max_d = df[DATE_COL].max().date()
+    d1, d2 = st.date_input("Date range", (min_d, max_d), key="date_range")
+
+# Filter dataframe
 mask = (df[DATE_COL].dt.date >= d1) & (df[DATE_COL].dt.date <= d2)
 if sel_customer != "(All)":
-    mask &= (df[CUSTOMER_COL] == sel_customer)
-
+    mask &= (df[CUSTOMER_COL].astype(str) == sel_customer)
 dff = df.loc[mask].copy()
 
-# =====================================
-# KPIs
-# =====================================
+# -------------------- Title + KPIs --------------------
+st.title("Service Calls Dashboard")
+
 k1, k2, k3 = st.columns(3)
-
 total_calls = dff[CALL_ID_COL].nunique() if CALL_ID_COL in dff.columns else len(dff)
-completed = (dff["STATUS"] == "COMPLETED").sum()
-not_attended = (dff["STATUS"] == "NOT ATTENDED").sum()
-
 k1.metric("Total Calls", int(total_calls))
-k2.metric("Completed", int(completed))
-k3.metric("Not Attended", int(not_attended))
+k2.metric("Completed", int((dff[STATUS_COL] == "COMPLETED").sum()))
+k3.metric("Not Attended", int((dff[STATUS_COL] == "NOT ATTENDED").sum()))
 
-# =====================================
-# Top charts (2 columns)
-# =====================================
-left, right = st.columns([1, 1])
+# -------------------- TOP: Pie + Customer Trend --------------------
+left, right = st.columns(2, gap="large")
 
-# ---- Pie: Call Status
+# ---- Pie (keep plotly legend style)
 with left:
     st.subheader("Call Status")
-
-    status_counts = dff["STATUS"].fillna("BLANK").replace("", "BLANK").value_counts().reset_index()
+    status_counts = (
+        dff[STATUS_COL]
+        .fillna("BLANK")
+        .replace({"NAN": "BLANK", "": "BLANK"})
+        .value_counts()
+        .reset_index()
+    )
     status_counts.columns = ["STATUS", "COUNT"]
 
-    fig_pie = px.pie(
-        status_counts,
-        names="STATUS",
-        values="COUNT",
-        hole=0
+    fig_pie = px.pie(status_counts, names="STATUS", values="COUNT", hole=0)
+    fig_pie.update_layout(
+        legend_title_text="",
+        margin=dict(l=10, r=10, t=10, b=10),
     )
-    fig_pie.update_traces(textposition="inside", textinfo="percent+value")
     st.plotly_chart(fig_pie, use_container_width=True)
 
-# ---- Customer Trend (Stacked) with "View" control placed near legend area
+# ---- Customer Trend: bar chart + legend column + dropdown UNDER legend (your marked box)
 with right:
-    heading = "All Customers" if sel_customer == "(All)" else sel_customer
-    st.subheader(heading)
+    customer_title = "All Customers" if sel_customer == "(All)" else sel_customer
+    st.subheader(customer_title)
 
-    # Place the view selector above legend area (right side)
-    view_cols = st.columns([0.65, 0.35])
-    with view_cols[1]:
-        view_mode = st.selectbox("View", ["Total", "Day", "Week", "Month"], index=3, key="cust_view")
+    full_range = (d1 == min_d and d2 == max_d)
+    default_mode = "Total" if full_range else "Month"
 
-    # Build period column based on view
-    dff["_DATE"] = pd.to_datetime(dff[DATE_COL], errors="coerce")
+    # 2 columns: left=chart, right=legend+dropdown (this makes the dropdown sit where you marked)
+    chart_col, legend_col = st.columns([3.3, 1.2], gap="large")
 
-    if view_mode == "Total":
-        dff["PERIOD"] = "Total"
-        x_order = ["Total"]
-    elif view_mode == "Day":
-        dff["PERIOD"] = dff["_DATE"].dt.strftime("%Y-%m-%d")
-        x_order = None
-    elif view_mode == "Week":
-        # ISO week safely
-        iso = dff["_DATE"].dt.isocalendar()
-        dff["PERIOD"] = iso["YEAR"].astype(str) + "-W" + iso["WEEK"].astype(int).astype(str).str.zfill(2)
-        x_order = None
-    else:  # Month
-        dff["PERIOD"] = dff["_DATE"].dt.strftime("%b %Y")  # Jan 2026, Feb 2026
-        # keep chronological order
-        month_order = (
-            dff[["_DATE"]].assign(M=dff["_DATE"].dt.to_period("M").astype(str))
-            .drop_duplicates()["M"].tolist()
+    # Decide mode (dropdown will be rendered INSIDE legend_col, BELOW legend)
+    # We'll build data AFTER reading trend_mode (but we also need statuses/colors for legend)
+    trend_mode = None
+    with legend_col:
+        st.markdown("**STATUS**")
+
+    # Prepare statuses list in a stable order
+    status_order = ["COMPLETED", "ATTENDED", "NOT ATTENDED", "BLANK"]
+    present_statuses = [s for s in status_order if s in dff[STATUS_COL].unique()]
+    # add any extras at end
+    extras = [s for s in sorted(dff[STATUS_COL].unique()) if s not in present_statuses]
+    statuses = present_statuses + extras if len(dff) else status_order
+
+    colors = status_palette(statuses)
+
+    # Render custom legend first (like left chart legend)
+    with legend_col:
+        render_custom_legend(statuses, colors, title="")
+
+        st.markdown("<div style='height:14px;'></div>", unsafe_allow_html=True)  # spacing
+
+        st.markdown("**View**")
+        trend_mode = st.selectbox(
+            "",
+            ["Total", "Day", "Week", "Month"],
+            index=["Total", "Day", "Week", "Month"].index(default_mode),
+            key="trend_mode",
+            label_visibility="collapsed",
         )
-        # Convert "YYYY-MM" to "Mon YYYY" in same order
-        month_order_labels = []
-        for m in month_order:
-            y, mo = m.split("-")
-            dt = pd.to_datetime(f"{y}-{mo}-01")
-            month_order_labels.append(dt.strftime("%b %Y"))
-        x_order = month_order_labels
 
-    cust_trend = (
-        dff.groupby(["PERIOD", "STATUS"])
-        .size()
-        .reset_index(name="COUNT")
-    )
+    # Build grouped data
+    tmp = dff.copy()
+    if trend_mode == "Total":
+        tmp["PERIOD"] = "All"
+        xorder = ["All"]
+        xcol = "PERIOD"
+        tickvals = xorder
+        ticktext = xorder
 
-    fig_cust = px.bar(
-        cust_trend,
-        x="PERIOD",
+    elif trend_mode == "Day":
+        tmp["PERIOD"] = tmp[DATE_COL].dt.date.astype(str)
+        xcol = "PERIOD"
+        xorder = sorted(tmp["PERIOD"].unique())
+        tickvals = xorder
+        ticktext = xorder
+
+    elif trend_mode == "Week":
+        iso = tmp[DATE_COL].dt.isocalendar()
+        tmp["PERIOD"] = iso["year"].astype(str) + "-W" + iso["week"].astype(int).astype(str).str.zfill(2)
+        xcol = "PERIOD"
+        xorder = sorted(tmp["PERIOD"].unique())
+        tickvals = xorder
+        ticktext = xorder
+
+    else:  # Month
+        tmp["PERIOD"] = tmp[DATE_COL].dt.to_period("M").astype(str)  # "2026-01"
+        xcol = "PERIOD"
+        xorder = sorted(tmp["PERIOD"].unique())
+        tickvals = xorder
+        # show Jan/Feb instead of Jan 1 / Feb 1
+        ticktext = [pd.to_datetime(p + "-01").strftime("%b") for p in xorder]
+
+    grp = tmp.groupby([xcol, STATUS_COL]).size().reset_index(name="COUNT")
+
+    fig_stack = px.bar(
+        grp,
+        x=xcol,
         y="COUNT",
-        color="STATUS",
+        color=STATUS_COL,
         barmode="stack",
-        category_orders={"PERIOD": x_order} if x_order else None,
+        color_discrete_map=colors,
+        category_orders={xcol: xorder, STATUS_COL: statuses},
     )
 
-    # Make legend style similar to pie (simple list on right)
-    fig_cust.update_layout(
-        legend_title_text="STATUS",
-        legend=dict(orientation="v", x=1.02, y=0.9),
-        margin=dict(l=10, r=160, t=10, b=40)
+    # IMPORTANT: hide plotly legend (we use custom legend in legend_col)
+    fig_stack.update_layout(
+        showlegend=False,
+        margin=dict(l=10, r=10, t=10, b=10),
     )
+    fig_stack.update_xaxes(
+        categoryorder="array",
+        categoryarray=xorder,
+        tickmode="array",
+        tickvals=tickvals,
+        ticktext=ticktext,
+        title_text="",
+    )
+    fig_stack.update_yaxes(title_text="Count")
 
-    st.plotly_chart(fig_cust, use_container_width=True)
+    with chart_col:
+        st.plotly_chart(fig_stack, use_container_width=True)
 
-# =====================================
-# Technician Performance (STACKED ROW chart)
-# =====================================
-st.subheader("Technician Performance (Stacked)")
+# -------------------- Technician Performance (stacked ROW) --------------------
+st.markdown("## Technician Performance (Sorted by Completion Rate)")
 
-# Use TECH 1 primarily; fallback to TECH 2 if TECH 1 empty
-tech_series = dff[TECH1_COL].replace("", pd.NA)
-tech_series = tech_series.fillna(dff[TECH2_COL].replace("", pd.NA))
-dff["TECH"] = tech_series.fillna("BLANK")
+if TECH_COL in dff.columns:
+    tech_df = dff.copy()
+    tech_df[TECH_COL] = tech_df[TECH_COL].astype(str).str.strip()
+    tech_df.loc[tech_df[TECH_COL].isin(["", "NAN", "NONE", "NULL"]), TECH_COL] = "BLANK"
 
-tech_status = (
-    dff.groupby(["TECH", "STATUS"])
-    .size()
-    .reset_index(name="COUNT")
-)
+    tech_counts = tech_df.groupby([TECH_COL, STATUS_COL]).size().reset_index(name="COUNT")
 
-# Order techs by completed count (desc)
-completed_by_tech = (
-    tech_status[tech_status["STATUS"] == "COMPLETED"]
-    .set_index("TECH")["COUNT"]
-    .to_dict()
-)
-tech_order = sorted(tech_status["TECH"].unique(), key=lambda t: completed_by_tech.get(t, 0), reverse=True)
+    totals = tech_counts.groupby(TECH_COL)["COUNT"].sum().rename("TOTAL")
+    completed = (
+        tech_counts.loc[tech_counts[STATUS_COL] == "COMPLETED"]
+        .groupby(TECH_COL)["COUNT"]
+        .sum()
+        .rename("COMPLETED")
+    )
+    rates = pd.concat([totals, completed], axis=1).fillna(0)
+    rates["COMP_RATE"] = rates["COMPLETED"] / rates["TOTAL"].where(rates["TOTAL"] != 0, 1)
 
-fig_tech = px.bar(
-    tech_status,
-    y="TECH",
-    x="COUNT",
-    color="STATUS",
-    barmode="stack",
-    category_orders={"TECH": tech_order},
-    orientation="h"
-)
+    order = rates.sort_values("COMP_RATE", ascending=False).index.tolist()
 
-fig_tech.update_layout(
-    legend_title_text="STATUS",
-    legend=dict(orientation="v", x=1.02, y=0.95),
-    margin=dict(l=10, r=160, t=10, b=10),
-    yaxis_title=""
-)
+    colors2 = status_palette(statuses)
 
-st.plotly_chart(fig_tech, use_container_width=True)
+    fig_tech = px.bar(
+        tech_counts,
+        y=TECH_COL,
+        x="COUNT",
+        color=STATUS_COL,
+        barmode="stack",
+        orientation="h",
+        color_discrete_map=colors2,
+        category_orders={TECH_COL: order, STATUS_COL: statuses},
+    )
+    fig_tech.update_layout(
+        legend_title_text="",
+        margin=dict(l=10, r=10, t=10, b=10),
+        yaxis_title="",
+        xaxis_title="Count",
+    )
+    st.plotly_chart(fig_tech, use_container_width=True)
+else:
+    st.warning(f"Technician column not found ({TECH_COL}). Available columns: {list(dff.columns)}")
 
-# =====================================
-# Show data (still full table for now)
-# =====================================
 with st.expander("Show data"):
-    st.dataframe(dff.drop(columns=["_DATE"], errors="ignore"), use_container_width=True)
+    st.dataframe(dff, use_container_width=True)
