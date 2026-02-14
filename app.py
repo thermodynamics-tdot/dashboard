@@ -36,31 +36,19 @@ def ensure_col(df, want):
             return a_n
     return None
 
-def status_palette(statuses):
-    base = {
+def status_palette():
+    # keep same as your charts
+    return {
         "COMPLETED": "#0068C9",
         "ATTENDED": "#83C9FF",
         "NOT ATTENDED": "#FF2B2B",
-        "BLANK": "#FFABAB",
-        "(BLANK)": "#FFABAB",
-        "OTHER": "#999999",
     }
-    return {s: base.get(s, "#666666") for s in statuses}
 
-def render_custom_legend(statuses, colors, title=""):
-    if title:
-        st.markdown(f"**{title}**")
-    for s in statuses:
-        c = colors.get(s, "#666")
-        st.markdown(
-            f"""
-            <div style="display:flex;align-items:center;gap:10px;margin:6px 0;">
-              <span style="width:12px;height:12px;background:{c};display:inline-block;border-radius:2px;"></span>
-              <span style="font-size:14px;">{s}</span>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+def normalize_status(s: str) -> str:
+    s = str(s).strip().upper()
+    if s in ["NAN", "", "NONE", "NULL", "(BLANK)", "BLANK"]:
+        return ""  # will be removed
+    return s
 
 # -------------------- Load --------------------
 df = load_data()
@@ -81,15 +69,13 @@ if missing:
 df[DATE_COL] = pd.to_datetime(df[DATE_COL], errors="coerce")
 df = df.dropna(subset=[DATE_COL]).copy()
 
-# Clean status
-df[STATUS_COL] = (
-    df[STATUS_COL]
-    .astype(str)
-    .str.strip()
-    .str.upper()
-    .replace({"NAN": "BLANK", "": "BLANK"})
-)
-df.loc[df[STATUS_COL].isin(["NONE", "NULL"]), STATUS_COL] = "BLANK"
+# Clean status and REMOVE blanks everywhere
+df[STATUS_COL] = df[STATUS_COL].apply(normalize_status)
+df = df[df[STATUS_COL] != ""].copy()
+
+# Keep only known statuses (optional; comment this block if you have more)
+KNOWN = {"COMPLETED", "ATTENDED", "NOT ATTENDED"}
+df = df[df[STATUS_COL].isin(KNOWN)].copy()
 
 # -------------------- Sidebar (wider) --------------------
 st.markdown(
@@ -129,27 +115,31 @@ k3.metric("Not Attended", int((dff[STATUS_COL] == "NOT ATTENDED").sum()))
 
 # -------------------- TOP: Pie + Customer Trend --------------------
 left, right = st.columns(2, gap="large")
+colors = status_palette()
+status_order = ["COMPLETED", "ATTENDED", "NOT ATTENDED"]
 
-# ---- Pie
+# ---- Pie (use Plotly legend, make sure size matches)
 with left:
     st.subheader("Call Status")
-    status_counts = (
-        dff[STATUS_COL]
-        .fillna("BLANK")
-        .replace({"NAN": "BLANK", "": "BLANK"})
-        .value_counts()
-        .reset_index()
-    )
+    status_counts = dff[STATUS_COL].value_counts().reindex(status_order).dropna().reset_index()
     status_counts.columns = ["STATUS", "COUNT"]
 
-    fig_pie = px.pie(status_counts, names="STATUS", values="COUNT", hole=0)
+    fig_pie = px.pie(
+        status_counts,
+        names="STATUS",
+        values="COUNT",
+        color="STATUS",
+        color_discrete_map=colors,
+        category_orders={"STATUS": status_order},
+    )
     fig_pie.update_layout(
         legend_title_text="",
+        legend=dict(font=dict(size=14)),  # legend size
         margin=dict(l=10, r=10, t=10, b=10),
     )
     st.plotly_chart(fig_pie, use_container_width=True)
 
-# ---- Customer Trend (stacked + custom legend + dropdown under legend)
+# ---- Customer Trend (use Plotly legend like pie, same sizing)
 with right:
     customer_title = "All Customers" if sel_customer == "(All)" else sel_customer
     st.subheader(customer_title)
@@ -157,21 +147,10 @@ with right:
     full_range = (d1 == min_d and d2 == max_d)
     default_mode = "Total" if full_range else "Month"
 
-    chart_col, legend_col = st.columns([3.3, 1.2], gap="large")
+    # layout: chart + right-side controls (dropdown placed under legend area)
+    chart_col, side_col = st.columns([3.3, 1.2], gap="large")
 
-    # Prepare statuses list in a stable order
-    status_order = ["COMPLETED", "ATTENDED", "NOT ATTENDED", "BLANK"]
-    present_statuses = [s for s in status_order if s in dff[STATUS_COL].unique()]
-    extras = [s for s in sorted(dff[STATUS_COL].unique()) if s not in present_statuses]
-    statuses = present_statuses + extras if len(dff) else status_order
-
-    colors = status_palette(statuses)
-
-    with legend_col:
-        st.markdown("**STATUS**")
-        render_custom_legend(statuses, colors, title="")
-        st.markdown("<div style='height:14px;'></div>", unsafe_allow_html=True)
-
+    with side_col:
         st.markdown("**View**")
         trend_mode = st.selectbox(
             "",
@@ -185,8 +164,8 @@ with right:
 
     if trend_mode == "Total":
         tmp["PERIOD"] = "All"
-        xorder = ["All"]
         xcol = "PERIOD"
+        xorder = ["All"]
         tickvals = xorder
         ticktext = xorder
 
@@ -213,6 +192,7 @@ with right:
         ticktext = [pd.to_datetime(p + "-01").strftime("%b") for p in xorder]  # Jan/Feb
 
     grp = tmp.groupby([xcol, STATUS_COL]).size().reset_index(name="COUNT")
+    grp = grp[grp[STATUS_COL].isin(status_order)].copy()
 
     fig_stack = px.bar(
         grp,
@@ -221,11 +201,13 @@ with right:
         color=STATUS_COL,
         barmode="stack",
         color_discrete_map=colors,
-        category_orders={xcol: xorder, STATUS_COL: statuses},
+        category_orders={xcol: xorder, STATUS_COL: status_order},
     )
 
+    # Make legend look like the first chart (same font size + compact)
     fig_stack.update_layout(
-        showlegend=False,
+        legend_title_text="",
+        legend=dict(font=dict(size=14)),  # same as pie
         margin=dict(l=10, r=10, t=10, b=10),
     )
     fig_stack.update_xaxes(
@@ -247,9 +229,10 @@ st.markdown("## Technician Performance (Sorted by Completion Rate)")
 if TECH_COL in dff.columns:
     tech_df = dff.copy()
     tech_df[TECH_COL] = tech_df[TECH_COL].astype(str).str.strip()
-    tech_df.loc[tech_df[TECH_COL].isin(["", "NAN", "NONE", "NULL"]), TECH_COL] = "BLANK"
+    tech_df = tech_df[~tech_df[TECH_COL].isin(["", "NAN", "NONE", "NULL"])].copy()
 
     tech_counts = tech_df.groupby([TECH_COL, STATUS_COL]).size().reset_index(name="COUNT")
+    tech_counts = tech_counts[tech_counts[STATUS_COL].isin(status_order)].copy()
 
     totals = tech_counts.groupby(TECH_COL)["COUNT"].sum().rename("TOTAL")
     completed = (
@@ -263,8 +246,6 @@ if TECH_COL in dff.columns:
 
     order = rates.sort_values("COMP_RATE", ascending=False).index.tolist()
 
-    colors2 = status_palette(statuses)
-
     fig_tech = px.bar(
         tech_counts,
         y=TECH_COL,
@@ -272,11 +253,12 @@ if TECH_COL in dff.columns:
         color=STATUS_COL,
         barmode="stack",
         orientation="h",
-        color_discrete_map=colors2,
-        category_orders={TECH_COL: order, STATUS_COL: statuses},
+        color_discrete_map=colors,
+        category_orders={TECH_COL: order, STATUS_COL: status_order},
     )
     fig_tech.update_layout(
         legend_title_text="",
+        legend=dict(font=dict(size=14)),
         margin=dict(l=10, r=10, t=10, b=10),
         yaxis_title="",
         xaxis_title="Count",
