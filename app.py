@@ -102,15 +102,12 @@ with c1:
     st.plotly_chart(fig_pie, use_container_width=True)
 
 with c2:
-    st.subheader("Customer Trend")
+    st.subheader("Customer Trend (Stacked)")
 
-    # Two columns: chart left, legend+filter right
-    # (WIDER RIGHT PANEL so text isn't cut)
+    # chart + right controls (wider so View shows fully)
     left_chart, right_panel = st.columns([3.6, 1.6], gap="large")
 
-    # Decide default view
     default_mode = "Total" if months_span <= 1 else "Month"
-
     trend_mode = right_panel.selectbox(
         "View",
         ["Total", "Day", "Week", "Month"],
@@ -118,7 +115,6 @@ with c2:
         key="trend_mode",
     )
 
-    # Create PERIOD based on trend_mode
     if trend_mode == "Total":
         dff["PERIOD"] = "TOTAL"
     elif trend_mode == "Day":
@@ -131,32 +127,39 @@ with c2:
 
     period_status = dff.groupby(["PERIOD", STATUS_COL]).size().reset_index(name="COUNT")
 
-    # Build chart (legend OFF, we’ll show legend in the right panel)
+    # Keep a consistent status order (optional)
+    status_order = ["COMPLETED", "ATTENDED", "NOT ATTENDED", "BLANK"]
+    present = [s for s in status_order if s in period_status[STATUS_COL].unique().tolist()]
+    extras = [s for s in period_status[STATUS_COL].unique().tolist() if s not in present]
+    final_status_order = present + extras
+    period_status[STATUS_COL] = pd.Categorical(period_status[STATUS_COL], categories=final_status_order, ordered=True)
+
     fig_stack = px.bar(
-        period_status,
+        period_status.sort_values("PERIOD"),
         x="PERIOD",
         y="COUNT",
         color=STATUS_COL,
         barmode="stack",
+        category_orders={STATUS_COL: final_status_order},
     )
+
+    # ✅ show Plotly legend (same style as pie chart legend)
     fig_stack.update_layout(
         xaxis_title="",
         yaxis_title="Count",
-        showlegend=False,
-        margin=dict(t=20, r=10, l=10, b=10),
+        showlegend=True,
+        legend_title_text="STATUS",
+        legend=dict(
+            x=1.02, y=0.9,
+            xanchor="left", yanchor="top"
+        ),
+        margin=dict(t=20, r=160, l=10, b=10),  # extra right margin so legend fits
     )
 
     left_chart.plotly_chart(fig_stack, use_container_width=True)
 
-    # Manual legend (right side)
-    status_order = ["ATTENDED", "COMPLETED", "NOT ATTENDED", "BLANK"]
-    present = [s for s in status_order if s in period_status[STATUS_COL].unique().tolist()]
-    extras = [s for s in period_status[STATUS_COL].unique().tolist() if s not in present]
-    legend_items = present + extras
-
-    right_panel.markdown("**STATUS**")
-    for s in legend_items:
-        right_panel.markdown(f"- {s}")
+    # optional heading in right panel below the View dropdown
+    right_panel.markdown("")
 
 # -------------------- TECHNICIAN (STACKED ROW / HORIZONTAL) --------------------
 st.subheader("Technician Performance (Sorted by Completion Rate)")
@@ -194,7 +197,6 @@ else:
     final_status_order = present + extras
     tech_status[STATUS_COL] = pd.Categorical(tech_status[STATUS_COL], categories=final_status_order, ordered=True)
 
-    # HORIZONTAL stacked bars (stacked row chart)
     fig_tech = px.bar(
         tech_status.sort_values(TECH_COL),
         y=TECH_COL,
