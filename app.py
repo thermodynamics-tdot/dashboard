@@ -76,7 +76,7 @@ if sel_customer != "(All)":
 
 dff = df.loc[mask].copy()
 
-# Helpers
+# Helper
 def months_in_range(start_date, end_date) -> int:
     sy, sm = start_date.year, start_date.month
     ey, em = end_date.year, end_date.month
@@ -102,7 +102,9 @@ with c1:
     st.plotly_chart(fig_pie, use_container_width=True)
 
 with c2:
-    st.subheader("Customer Trend (Stacked)")
+    # Title should reflect selected customer
+    customer_title = "All Customers" if sel_customer == "(All)" else sel_customer
+    st.subheader(customer_title)
 
     # chart + right controls (wider so View shows fully)
     left_chart, right_panel = st.columns([3.6, 1.6], gap="large")
@@ -115,19 +117,42 @@ with c2:
         key="trend_mode",
     )
 
+    # Build period key
     if trend_mode == "Total":
-        dff["PERIOD"] = "TOTAL"
+        dff["PERIOD_LABEL"] = "TOTAL"
+        dff["PERIOD_SORT"] = pd.Timestamp("2000-01-01")
+        x_col = "PERIOD_LABEL"
+        tickformat = None
+
     elif trend_mode == "Day":
-        dff["PERIOD"] = dff[DATE_COL].dt.date.astype(str)
+        dff["PERIOD_SORT"] = dff[DATE_COL].dt.floor("D")
+        dff["PERIOD_LABEL"] = dff["PERIOD_SORT"].dt.strftime("%Y-%m-%d")
+        x_col = "PERIOD_LABEL"
+        tickformat = None
+
     elif trend_mode == "Week":
-        # ISO week label safely
-        dff["PERIOD"] = dff[DATE_COL].dt.strftime("%G-W%V")
-    else:
-        dff["PERIOD"] = dff[DATE_COL].dt.to_period("M").astype(str)
+        # ISO week label + a sortable date (week start Monday)
+        iso = dff[DATE_COL].dt.isocalendar()
+        dff["PERIOD_LABEL"] = iso["YEAR"].astype(str) + "-W" + iso["WEEK"].astype(str).str.zfill(2)
+        dff["PERIOD_SORT"] = dff[DATE_COL] - pd.to_timedelta(dff[DATE_COL].dt.weekday, unit="D")
+        x_col = "PERIOD_LABEL"
+        tickformat = None
 
-    period_status = dff.groupby(["PERIOD", STATUS_COL]).size().reset_index(name="COUNT")
+    else:  # Month
+        # Use first day of month as a real datetime so Plotly can format ticks nicely
+        dff["PERIOD_SORT"] = dff[DATE_COL].dt.to_period("M").dt.to_timestamp()
+        dff["PERIOD_LABEL"] = dff["PERIOD_SORT"]  # datetime on x-axis
+        x_col = "PERIOD_LABEL"
+        tickformat = "%b"  # Jan, Feb, ...
 
-    # Keep a consistent status order (optional)
+    period_status = (
+        dff.groupby([x_col, "PERIOD_SORT", STATUS_COL])
+        .size()
+        .reset_index(name="COUNT")
+        .sort_values("PERIOD_SORT")
+    )
+
+    # Consistent status order
     status_order = ["COMPLETED", "ATTENDED", "NOT ATTENDED", "BLANK"]
     present = [s for s in status_order if s in period_status[STATUS_COL].unique().tolist()]
     extras = [s for s in period_status[STATUS_COL].unique().tolist() if s not in present]
@@ -135,31 +160,28 @@ with c2:
     period_status[STATUS_COL] = pd.Categorical(period_status[STATUS_COL], categories=final_status_order, ordered=True)
 
     fig_stack = px.bar(
-        period_status.sort_values("PERIOD"),
-        x="PERIOD",
+        period_status,
+        x=x_col,
         y="COUNT",
         color=STATUS_COL,
         barmode="stack",
         category_orders={STATUS_COL: final_status_order},
     )
 
-    # ✅ show Plotly legend (same style as pie chart legend)
     fig_stack.update_layout(
         xaxis_title="",
         yaxis_title="Count",
         showlegend=True,
         legend_title_text="STATUS",
-        legend=dict(
-            x=1.02, y=0.9,
-            xanchor="left", yanchor="top"
-        ),
-        margin=dict(t=20, r=160, l=10, b=10),  # extra right margin so legend fits
+        legend=dict(x=1.02, y=0.9, xanchor="left", yanchor="top"),
+        margin=dict(t=20, r=160, l=10, b=10),
     )
 
-    left_chart.plotly_chart(fig_stack, use_container_width=True)
+    # Month tick formatting (Jan / Feb)
+    if tickformat:
+        fig_stack.update_xaxes(tickformat=tickformat)
 
-    # optional heading in right panel below the View dropdown
-    right_panel.markdown("")
+    left_chart.plotly_chart(fig_stack, use_container_width=True)
 
 # -------------------- TECHNICIAN (STACKED ROW / HORIZONTAL) --------------------
 st.subheader("Technician Performance (Sorted by Completion Rate)")
