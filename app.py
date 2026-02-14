@@ -102,7 +102,7 @@ with c1:
     st.plotly_chart(fig_pie, use_container_width=True)
 
 with c2:
-    st.subheader("Customer Trend (Stacked)")
+    st.subheader("Customer Trend")
 
     # Two columns: chart left, legend+filter right
     # (WIDER RIGHT PANEL so text isn't cut)
