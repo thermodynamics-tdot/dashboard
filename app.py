@@ -37,7 +37,6 @@ def ensure_col(df, want):
     return None
 
 def status_palette(statuses):
-    # simple stable palette (you can change later)
     base = {
         "COMPLETED": "#0068C9",
         "ATTENDED": "#83C9FF",
@@ -83,7 +82,13 @@ df[DATE_COL] = pd.to_datetime(df[DATE_COL], errors="coerce")
 df = df.dropna(subset=[DATE_COL]).copy()
 
 # Clean status
-df[STATUS_COL] = df[STATUS_COL].astype(str).str.strip().str.upper().replace({"NAN": "BLANK", "": "BLANK"})
+df[STATUS_COL] = (
+    df[STATUS_COL]
+    .astype(str)
+    .str.strip()
+    .str.upper()
+    .replace({"NAN": "BLANK", "": "BLANK"})
+)
 df.loc[df[STATUS_COL].isin(["NONE", "NULL"]), STATUS_COL] = "BLANK"
 
 # -------------------- Sidebar (wider) --------------------
@@ -125,7 +130,7 @@ k3.metric("Not Attended", int((dff[STATUS_COL] == "NOT ATTENDED").sum()))
 # -------------------- TOP: Pie + Customer Trend --------------------
 left, right = st.columns(2, gap="large")
 
-# ---- Pie (keep plotly legend style)
+# ---- Pie
 with left:
     st.subheader("Call Status")
     status_counts = (
@@ -144,7 +149,7 @@ with left:
     )
     st.plotly_chart(fig_pie, use_container_width=True)
 
-# ---- Customer Trend: bar chart + legend column + dropdown UNDER legend (your marked box)
+# ---- Customer Trend (stacked + custom legend + dropdown under legend)
 with right:
     customer_title = "All Customers" if sel_customer == "(All)" else sel_customer
     st.subheader(customer_title)
@@ -152,29 +157,20 @@ with right:
     full_range = (d1 == min_d and d2 == max_d)
     default_mode = "Total" if full_range else "Month"
 
-    # 2 columns: left=chart, right=legend+dropdown (this makes the dropdown sit where you marked)
     chart_col, legend_col = st.columns([3.3, 1.2], gap="large")
-
-    # Decide mode (dropdown will be rendered INSIDE legend_col, BELOW legend)
-    # We'll build data AFTER reading trend_mode (but we also need statuses/colors for legend)
-    trend_mode = None
-    with legend_col:
-        st.markdown("**STATUS**")
 
     # Prepare statuses list in a stable order
     status_order = ["COMPLETED", "ATTENDED", "NOT ATTENDED", "BLANK"]
     present_statuses = [s for s in status_order if s in dff[STATUS_COL].unique()]
-    # add any extras at end
     extras = [s for s in sorted(dff[STATUS_COL].unique()) if s not in present_statuses]
     statuses = present_statuses + extras if len(dff) else status_order
 
     colors = status_palette(statuses)
 
-    # Render custom legend first (like left chart legend)
     with legend_col:
+        st.markdown("**STATUS**")
         render_custom_legend(statuses, colors, title="")
-
-        st.markdown("<div style='height:14px;'></div>", unsafe_allow_html=True)  # spacing
+        st.markdown("<div style='height:14px;'></div>", unsafe_allow_html=True)
 
         st.markdown("**View**")
         trend_mode = st.selectbox(
@@ -185,8 +181,8 @@ with right:
             label_visibility="collapsed",
         )
 
-    # Build grouped data
     tmp = dff.copy()
+
     if trend_mode == "Total":
         tmp["PERIOD"] = "All"
         xorder = ["All"]
@@ -214,8 +210,7 @@ with right:
         xcol = "PERIOD"
         xorder = sorted(tmp["PERIOD"].unique())
         tickvals = xorder
-        # show Jan/Feb instead of Jan 1 / Feb 1
-        ticktext = [pd.to_datetime(p + "-01").strftime("%b") for p in xorder]
+        ticktext = [pd.to_datetime(p + "-01").strftime("%b") for p in xorder]  # Jan/Feb
 
     grp = tmp.groupby([xcol, STATUS_COL]).size().reset_index(name="COUNT")
 
@@ -229,7 +224,6 @@ with right:
         category_orders={xcol: xorder, STATUS_COL: statuses},
     )
 
-    # IMPORTANT: hide plotly legend (we use custom legend in legend_col)
     fig_stack.update_layout(
         showlegend=False,
         margin=dict(l=10, r=10, t=10, b=10),
