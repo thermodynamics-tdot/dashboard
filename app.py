@@ -52,8 +52,11 @@ def status_palette():
     }
 
 def normalize_status(s):
+    # Treat truly empty + whitespace-only as blank
+    if pd.isna(s):
+        return "BLANK"
     s = str(s).strip().upper()
-    if s in ["NAN", "", "NONE", "NULL", "(BLANK)"]:
+    if s in ["", "NAN", "NONE", "NULL", "(BLANK)"]:
         return "BLANK"
     return s
 
@@ -65,19 +68,20 @@ def normalize_text(x):
 
 def multiselect_with_all(label, options, default_all=True, key=None):
     """
-    Streamlit multiselect with an (All) option that selects everything.
-    Treat empty selection as All.
+    Multiselect with (All). If (All) selected (or user selects nothing),
+    return None => meaning DON'T filter this field.
     """
     options = [o for o in options if o is not None]
     options_sorted = sorted(options, key=lambda s: str(s).lower())
+
     all_label = "(All)"
     ui_options = [all_label] + options_sorted
-
     default = [all_label] if default_all else []
+
     chosen = st.multiselect(label, ui_options, default=default, key=key)
 
     if all_label in chosen or len(chosen) == 0:
-        return options_sorted
+        return None  # IMPORTANT: no filtering
     return chosen
 
 # -------------------- Load --------------------
@@ -112,16 +116,14 @@ CALL_ID_COL = CALL_ID_COL_REAL  # may be None
 df[DATE_COL] = pd.to_datetime(df[DATE_COL], errors="coerce")
 df = df.dropna(subset=[DATE_COL]).copy()
 
-# Normalize status
+# Normalize fields
 df[STATUS_COL] = df[STATUS_COL].apply(normalize_status)
-
-# ✅ NEW: exclude rows where status is blank
-df = df[df[STATUS_COL] != "BLANK"].copy()
-
-# Normalize customer/tech to clean strings
 df[CUSTOMER_COL] = df[CUSTOMER_COL].apply(normalize_text)
 if TECH_COL and TECH_COL in df.columns:
     df[TECH_COL] = df[TECH_COL].apply(normalize_text)
+
+# ✅ Keep ONLY rows where status is actually filled
+df = df[df[STATUS_COL] != "BLANK"].copy()
 
 # -------------------- Sidebar (wider) --------------------
 st.markdown(
@@ -140,25 +142,25 @@ status_order = ["COMPLETED", "ATTENDED", "NOT ATTENDED"]
 with st.sidebar:
     st.markdown("## Filters")
 
-    # Customers
+    # Customers (All = no filter; blanks in CUSTOMER will still be included)
     customer_options = df[CUSTOMER_COL].dropna().unique().tolist()
     sel_customers = multiselect_with_all("Customer", customer_options, default_all=True, key="cust_multi")
 
-    # Technicians
+    # Technicians (All = no filter; blanks in TECH will still be included)
     if TECH_COL and TECH_COL in df.columns:
         tech_options = df[TECH_COL].dropna().unique().tolist()
         sel_techs = multiselect_with_all("Technician", tech_options, default_all=True, key="tech_multi")
     else:
         sel_techs = None
 
-    # Status dropdown (single)
+    # Status dropdown (single) — keeps your original behavior
     status_dropdown = ["(All)"] + status_order
     sel_status = st.selectbox("Status", status_dropdown, index=0)
 
     min_d = df[DATE_COL].min().date()
     max_d = df[DATE_COL].max().date()
 
-    # ✅ End date defaults to today's date (UI)
+    # ✅ End date shows TODAY in UI
     today = date.today()
     if st.session_state.get("_end_date_last_set") != today:
         st.session_state["end_date"] = today
@@ -172,18 +174,20 @@ with st.sidebar:
         d1, d2_ui = d2_ui, d1
 
 # -------------------- Filter data --------------------
-# For filtering: don't go beyond max date in the data
+# ✅ Filtering cannot go beyond your actual data max date
 d2 = min(d2_ui, max_d)
 
 mask = (df[DATE_COL].dt.date >= d1) & (df[DATE_COL].dt.date <= d2)
 
-if sel_customers:
+# Customers: only filter if user picked specific customers
+if sel_customers is not None:
     mask &= df[CUSTOMER_COL].isin(sel_customers)
 
+# Technicians: only filter if user picked specific techs
 if sel_techs is not None and TECH_COL and TECH_COL in df.columns:
-    if sel_techs:
-        mask &= df[TECH_COL].isin(sel_techs)
+    mask &= df[TECH_COL].isin(sel_techs)
 
+# Status: only filter if user picked a specific status
 if sel_status != "(All)":
     mask &= (df[STATUS_COL] == sel_status)
 
@@ -206,6 +210,7 @@ k3.metric("Not Attended", int((dff[STATUS_COL] == "NOT ATTENDED").sum()))
 # -------------------- Charts --------------------
 left, right = st.columns(2, gap="large")
 
+# For charts: when status is "(All)", show only the main 3 statuses (like your original)
 chart_base = dff.copy()
 if sel_status == "(All)":
     chart_base = chart_base[chart_base[STATUS_COL].isin(status_order)].copy()
@@ -240,7 +245,7 @@ with left:
 
 # ---------- CUSTOMER TREND ----------
 with right:
-    if len(sel_customers) == 1:
+    if sel_customers is not None and len(sel_customers) == 1:
         customer_title = sel_customers[0]
     else:
         customer_title = "Selected Customers"
@@ -302,7 +307,6 @@ with right:
             legend=dict(font=dict(size=14)),
             margin=dict(l=10, r=10, t=10, b=10),
         )
-
         fig_stack.update_xaxes(
             categoryorder="array",
             categoryarray=xorder,
