@@ -47,6 +47,7 @@ def status_palette():
         "COMPLETED": "#0068C9",
         "ATTENDED": "#83C9FF",
         "NOT ATTENDED": "#FF2B2B",
+        "BLANK": "#BDBDBD",
     }
 
 def normalize_status(s):
@@ -87,7 +88,7 @@ CALL_ID_COL = CALL_ID_COL_REAL  # may be None
 df[DATE_COL] = pd.to_datetime(df[DATE_COL], errors="coerce")
 df = df.dropna(subset=[DATE_COL]).copy()
 
-# Normalize status (DO NOT remove BLANK rows from dataset)
+# Normalize status (keep BLANK rows)
 df[STATUS_COL] = df[STATUS_COL].apply(normalize_status)
 
 # -------------------- Sidebar (wider) --------------------
@@ -101,11 +102,27 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+status_order = ["COMPLETED", "ATTENDED", "NOT ATTENDED"]  # main statuses
+colors = status_palette()
+
 with st.sidebar:
     st.markdown("## Filters")
 
     customers = ["(All)"] + sorted(df[CUSTOMER_COL].dropna().astype(str).unique().tolist())
     sel_customer = st.selectbox("Customer", customers)
+
+    # ✅ Status filter (connected to all charts)
+    all_statuses = sorted(df[STATUS_COL].dropna().astype(str).unique().tolist())
+    # Put common ones first if they exist
+    preferred = [s for s in status_order if s in all_statuses]
+    remaining = [s for s in all_statuses if s not in preferred]
+    status_choices = preferred + remaining
+
+    sel_status = st.multiselect(
+        "Status",
+        options=status_choices,
+        default=preferred if preferred else status_choices,
+    )
 
     min_d = df[DATE_COL].min().date()
     max_d = df[DATE_COL].max().date()
@@ -119,10 +136,18 @@ with st.sidebar:
     if d1 > d2:
         d1, d2 = d2, d1
 
-# Filter
+# -------------------- Filter data --------------------
 mask = (df[DATE_COL].dt.date >= d1) & (df[DATE_COL].dt.date <= d2)
+
 if sel_customer != "(All)":
     mask &= (df[CUSTOMER_COL].astype(str) == sel_customer)
+
+if sel_status:
+    mask &= df[STATUS_COL].isin(sel_status)
+else:
+    # If user unselects everything, show nothing
+    mask &= False
+
 dff = df.loc[mask].copy()
 
 # -------------------- Title + KPIs --------------------
@@ -142,20 +167,24 @@ k3.metric("Not Attended", int((dff[STATUS_COL] == "NOT ATTENDED").sum()))
 # -------------------- Charts --------------------
 left, right = st.columns(2, gap="large")
 
-colors = status_palette()
-status_order = ["COMPLETED", "ATTENDED", "NOT ATTENDED"]
+# For charts, we typically hide BLANK unless the user explicitly selected it
+show_statuses_for_charts = [s for s in sel_status if s != "BLANK"] if sel_status else []
+if not show_statuses_for_charts:
+    # fallback: if user only selected BLANK (or none), show what they selected
+    show_statuses_for_charts = sel_status
 
 # ---------- PIE ----------
 with left:
     st.subheader("Call Status")
 
-    # hide BLANK only for chart
-    chart_df = dff[dff[STATUS_COL].isin(status_order)].copy()
+    chart_df = dff.copy()
+    if show_statuses_for_charts:
+        chart_df = chart_df[chart_df[STATUS_COL].isin(show_statuses_for_charts)].copy()
 
     status_counts = (
         chart_df[STATUS_COL]
         .value_counts()
-        .reindex(status_order)
+        .reindex([s for s in status_order if s in show_statuses_for_charts] + [s for s in show_statuses_for_charts if s not in status_order])
         .dropna()
         .reset_index()
     )
@@ -167,7 +196,6 @@ with left:
         values="COUNT",
         color="STATUS",
         color_discrete_map=colors,
-        category_orders={"STATUS": status_order},
     )
     fig_pie.update_layout(
         legend_title_text="",
@@ -196,100 +224,109 @@ with right:
         )
 
     tmp = dff.copy()
-    tmp = tmp[tmp[STATUS_COL].isin(status_order)].copy()  # hide BLANK only in chart
+    if show_statuses_for_charts:
+        tmp = tmp[tmp[STATUS_COL].isin(show_statuses_for_charts)].copy()
 
-    if trend_mode == "Total":
-        tmp["PERIOD"] = "All"
-        xorder = ["All"]
-        tickvals, ticktext = xorder, xorder
+    if len(tmp) == 0:
+        with chart_col:
+            st.info("No data for the selected filters.")
+    else:
+        if trend_mode == "Total":
+            tmp["PERIOD"] = "All"
+            xorder = ["All"]
+            tickvals, ticktext = xorder, xorder
 
-    elif trend_mode == "Day":
-        tmp["PERIOD"] = tmp[DATE_COL].dt.date.astype(str)
-        xorder = sorted(tmp["PERIOD"].unique())
-        tickvals, ticktext = xorder, xorder
+        elif trend_mode == "Day":
+            tmp["PERIOD"] = tmp[DATE_COL].dt.date.astype(str)
+            xorder = sorted(tmp["PERIOD"].unique())
+            tickvals, ticktext = xorder, xorder
 
-    elif trend_mode == "Week":
-        iso = tmp[DATE_COL].dt.isocalendar()
-        tmp["PERIOD"] = iso["year"].astype(str) + "-W" + iso["week"].astype(int).astype(str).str.zfill(2)
-        xorder = sorted(tmp["PERIOD"].unique())
-        tickvals, ticktext = xorder, xorder
+        elif trend_mode == "Week":
+            iso = tmp[DATE_COL].dt.isocalendar()
+            tmp["PERIOD"] = iso["year"].astype(str) + "-W" + iso["week"].astype(int).astype(str).str.zfill(2)
+            xorder = sorted(tmp["PERIOD"].unique())
+            tickvals, ticktext = xorder, xorder
 
-    else:  # Month
-        tmp["PERIOD"] = tmp[DATE_COL].dt.to_period("M").astype(str)
-        xorder = sorted(tmp["PERIOD"].unique())
-        tickvals = xorder
-        ticktext = [pd.to_datetime(p + "-01").strftime("%b") for p in xorder]  # Jan/Feb
+        else:  # Month
+            tmp["PERIOD"] = tmp[DATE_COL].dt.to_period("M").astype(str)
+            xorder = sorted(tmp["PERIOD"].unique())
+            tickvals = xorder
+            ticktext = [pd.to_datetime(p + "-01").strftime("%b") for p in xorder]
 
-    grp = tmp.groupby(["PERIOD", STATUS_COL]).size().reset_index(name="COUNT")
+        grp = tmp.groupby(["PERIOD", STATUS_COL]).size().reset_index(name="COUNT")
 
-    fig_stack = px.bar(
-        grp,
-        x="PERIOD",
-        y="COUNT",
-        color=STATUS_COL,
-        barmode="stack",
-        color_discrete_map=colors,
-        category_orders={"PERIOD": xorder, STATUS_COL: status_order},
-    )
+        fig_stack = px.bar(
+            grp,
+            x="PERIOD",
+            y="COUNT",
+            color=STATUS_COL,
+            barmode="stack",
+            color_discrete_map=colors,
+            category_orders={"PERIOD": xorder},
+        )
 
-    fig_stack.update_layout(
-        legend_title_text="",
-        legend=dict(font=dict(size=14)),  # match pie
-        margin=dict(l=10, r=10, t=10, b=10),
-    )
+        fig_stack.update_layout(
+            legend_title_text="",
+            legend=dict(font=dict(size=14)),
+            margin=dict(l=10, r=10, t=10, b=10),
+        )
 
-    fig_stack.update_xaxes(
-        categoryorder="array",
-        categoryarray=xorder,
-        tickmode="array",
-        tickvals=tickvals,
-        ticktext=ticktext,
-        title_text="",
-    )
-    fig_stack.update_yaxes(title_text="Count")
+        fig_stack.update_xaxes(
+            categoryorder="array",
+            categoryarray=xorder,
+            tickmode="array",
+            tickvals=tickvals,
+            ticktext=ticktext,
+            title_text="",
+        )
+        fig_stack.update_yaxes(title_text="Count")
 
-    with chart_col:
-        st.plotly_chart(fig_stack, use_container_width=True)
+        with chart_col:
+            st.plotly_chart(fig_stack, use_container_width=True)
 
 # -------------------- Technician Performance (stacked ROW) --------------------
 st.markdown("## Technician Performance (Sorted by Completion Rate)")
 
 if TECH_COL and TECH_COL in dff.columns:
     tech_df = dff.copy()
-    tech_df = tech_df[tech_df[STATUS_COL].isin(status_order)].copy()  # hide BLANK only in chart
+    if show_statuses_for_charts:
+        tech_df = tech_df[tech_df[STATUS_COL].isin(show_statuses_for_charts)].copy()
 
-    tech_counts = tech_df.groupby([TECH_COL, STATUS_COL]).size().reset_index(name="COUNT")
+    if len(tech_df) == 0:
+        st.info("No technician data for the selected filters.")
+    else:
+        tech_counts = tech_df.groupby([TECH_COL, STATUS_COL]).size().reset_index(name="COUNT")
 
-    totals = tech_counts.groupby(TECH_COL)["COUNT"].sum().rename("TOTAL")
-    completed = (
-        tech_counts[tech_counts[STATUS_COL] == "COMPLETED"]
-        .groupby(TECH_COL)["COUNT"]
-        .sum()
-        .rename("COMPLETED")
-    )
+        totals = tech_counts.groupby(TECH_COL)["COUNT"].sum().rename("TOTAL")
+        completed = (
+            tech_counts[tech_counts[STATUS_COL] == "COMPLETED"]
+            .groupby(TECH_COL)["COUNT"]
+            .sum()
+            .rename("COMPLETED")
+        )
 
-    rates = pd.concat([totals, completed], axis=1).fillna(0)
-    rates["COMP_RATE"] = rates["COMPLETED"] / rates["TOTAL"].where(rates["TOTAL"] != 0, 1)
-    order = rates.sort_values("COMP_RATE", ascending=False).index.tolist()
+        rates = pd.concat([totals, completed], axis=1).fillna(0)
+        rates["COMP_RATE"] = rates["COMPLETED"] / rates["TOTAL"].where(rates["TOTAL"] != 0, 1)
+        order = rates.sort_values("COMP_RATE", ascending=False).index.tolist()
 
-    fig_tech = px.bar(
-        tech_counts,
-        y=TECH_COL,
-        x="COUNT",
-        color=STATUS_COL,
-        barmode="stack",
-        orientation="h",
-        color_discrete_map=colors,
-        category_orders={TECH_COL: order, STATUS_COL: status_order},
-    )
-    fig_tech.update_layout(
-        legend_title_text="",
-        legend=dict(font=dict(size=14)),
-        margin=dict(l=10, r=10, t=10, b=10),
-        yaxis_title="",
-        xaxis_title="Count",
-    )
-    st.plotly_chart(fig_tech, use_container_width=True)
+        fig_tech = px.bar(
+            tech_counts,
+            y=TECH_COL,
+            x="COUNT",
+            color=STATUS_COL,
+            barmode="stack",
+            orientation="h",
+            color_discrete_map=colors,
+            category_orders={TECH_COL: order},
+        )
+        fig_tech.update_layout(
+            legend_title_text="",
+            legend=dict(font=dict(size=14)),
+            margin=dict(l=10, r=10, t=10, b=10),
+            yaxis_title="",
+            xaxis_title="Count",
+        )
+        st.plotly_chart(fig_tech, use_container_width=True)
 
 # -------------------- Show Data --------------------
 with st.expander("Show data"):
