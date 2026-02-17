@@ -65,20 +65,19 @@ def normalize_text(x):
 
 def multiselect_with_all(label, options, default_all=True, key=None):
     """
-    Multiselect with (All). If (All) is selected (or nothing selected),
-    return None meaning: don't filter this field.
+    Streamlit multiselect with an (All) option that selects everything.
+    Treat empty selection as All.
     """
     options = [o for o in options if o is not None]
     options_sorted = sorted(options, key=lambda s: str(s).lower())
-
     all_label = "(All)"
     ui_options = [all_label] + options_sorted
-    default = [all_label] if default_all else []
 
+    default = [all_label] if default_all else []
     chosen = st.multiselect(label, ui_options, default=default, key=key)
 
     if all_label in chosen or len(chosen) == 0:
-        return None  # IMPORTANT: no filtering
+        return options_sorted
     return chosen
 
 # -------------------- Load --------------------
@@ -113,8 +112,13 @@ CALL_ID_COL = CALL_ID_COL_REAL  # may be None
 df[DATE_COL] = pd.to_datetime(df[DATE_COL], errors="coerce")
 df = df.dropna(subset=[DATE_COL]).copy()
 
-# Normalize fields
+# Normalize status
 df[STATUS_COL] = df[STATUS_COL].apply(normalize_status)
+
+# ✅ NEW: exclude rows where status is blank
+df = df[df[STATUS_COL] != "BLANK"].copy()
+
+# Normalize customer/tech to clean strings
 df[CUSTOMER_COL] = df[CUSTOMER_COL].apply(normalize_text)
 if TECH_COL and TECH_COL in df.columns:
     df[TECH_COL] = df[TECH_COL].apply(normalize_text)
@@ -137,12 +141,12 @@ with st.sidebar:
     st.markdown("## Filters")
 
     # Customers
-    customer_options = df[CUSTOMER_COL].unique().tolist()
+    customer_options = df[CUSTOMER_COL].dropna().unique().tolist()
     sel_customers = multiselect_with_all("Customer", customer_options, default_all=True, key="cust_multi")
 
     # Technicians
     if TECH_COL and TECH_COL in df.columns:
-        tech_options = df[TECH_COL].unique().tolist()
+        tech_options = df[TECH_COL].dropna().unique().tolist()
         sel_techs = multiselect_with_all("Technician", tech_options, default_all=True, key="tech_multi")
     else:
         sel_techs = None
@@ -154,7 +158,7 @@ with st.sidebar:
     min_d = df[DATE_COL].min().date()
     max_d = df[DATE_COL].max().date()
 
-    # Show today's date in UI (even if data doesn't have it)
+    # ✅ End date defaults to today's date (UI)
     today = date.today()
     if st.session_state.get("_end_date_last_set") != today:
         st.session_state["end_date"] = today
@@ -168,20 +172,18 @@ with st.sidebar:
         d1, d2_ui = d2_ui, d1
 
 # -------------------- Filter data --------------------
-# Filtering end date cannot exceed the max date in the data
+# For filtering: don't go beyond max date in the data
 d2 = min(d2_ui, max_d)
 
 mask = (df[DATE_COL].dt.date >= d1) & (df[DATE_COL].dt.date <= d2)
 
-# Customers (ONLY filter if not All)
-if sel_customers is not None:
+if sel_customers:
     mask &= df[CUSTOMER_COL].isin(sel_customers)
 
-# Technicians (ONLY filter if not All)
 if sel_techs is not None and TECH_COL and TECH_COL in df.columns:
-    mask &= df[TECH_COL].isin(sel_techs)
+    if sel_techs:
+        mask &= df[TECH_COL].isin(sel_techs)
 
-# Status
 if sel_status != "(All)":
     mask &= (df[STATUS_COL] == sel_status)
 
@@ -204,7 +206,6 @@ k3.metric("Not Attended", int((dff[STATUS_COL] == "NOT ATTENDED").sum()))
 # -------------------- Charts --------------------
 left, right = st.columns(2, gap="large")
 
-# For charts: when status is "(All)", show only the main 3 statuses (like your original)
 chart_base = dff.copy()
 if sel_status == "(All)":
     chart_base = chart_base[chart_base[STATUS_COL].isin(status_order)].copy()
@@ -239,8 +240,7 @@ with left:
 
 # ---------- CUSTOMER TREND ----------
 with right:
-    # If multiple customers selected, show "Selected Customers"
-    if sel_customers is not None and len(sel_customers) == 1:
+    if len(sel_customers) == 1:
         customer_title = sel_customers[0]
     else:
         customer_title = "Selected Customers"
@@ -302,6 +302,7 @@ with right:
             legend=dict(font=dict(size=14)),
             margin=dict(l=10, r=10, t=10, b=10),
         )
+
         fig_stack.update_xaxes(
             categoryorder="array",
             categoryarray=xorder,
