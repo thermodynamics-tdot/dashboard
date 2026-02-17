@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+from datetime import date
 
 # -------------------- Page --------------------
 st.set_page_config(page_title="Service Calls Dashboard", layout="wide")
@@ -150,11 +151,6 @@ with st.sidebar:
     # ✅ Status dropdown (single)
     status_dropdown = ["(All)"] + status_order
     sel_status = st.selectbox("Status", status_dropdown, index=0)
-
-    min_d = df[DATE_COL].min().date()
-    max_d = df[DATE_COL].max().date()
-
-from datetime import date  # make sure this is at the top of your file
 
     min_d = df[DATE_COL].min().date()
     max_d = df[DATE_COL].max().date()
