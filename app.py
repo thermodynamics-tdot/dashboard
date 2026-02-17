@@ -65,8 +65,8 @@ def normalize_text(x):
 
 def multiselect_with_all(label, options, default_all=True, key=None):
     """
-    Streamlit multiselect that behaves like a checkbox list (built-in UI),
-    with an (All) option that selects everything.
+    Streamlit multiselect with an (All) option that selects everything.
+    Treat empty selection as All.
     """
     options = [o for o in options if o is not None]
     options_sorted = sorted(options, key=lambda s: str(s).lower())
@@ -77,7 +77,7 @@ def multiselect_with_all(label, options, default_all=True, key=None):
     chosen = st.multiselect(label, ui_options, default=default, key=key)
 
     if all_label in chosen or len(chosen) == 0:
-        return options_sorted  # treat empty as all to avoid "no data" confusion
+        return options_sorted
     return chosen
 
 # -------------------- Load --------------------
@@ -137,11 +137,11 @@ status_order = ["COMPLETED", "ATTENDED", "NOT ATTENDED"]
 with st.sidebar:
     st.markdown("## Filters")
 
-    # ✅ Customers (multi-select with checkboxes)
+    # ✅ Customers
     customer_options = df[CUSTOMER_COL].dropna().unique().tolist()
     sel_customers = multiselect_with_all("Customer", customer_options, default_all=True, key="cust_multi")
 
-    # ✅ Technicians (multi-select with checkboxes)
+    # ✅ Technicians
     if TECH_COL and TECH_COL in df.columns:
         tech_options = df[TECH_COL].dropna().unique().tolist()
         sel_techs = multiselect_with_all("Technician", tech_options, default_all=True, key="tech_multi")
@@ -155,14 +155,13 @@ with st.sidebar:
     min_d = df[DATE_COL].min().date()
     max_d = df[DATE_COL].max().date()
 
-    # ✅ Default end date = today (but not beyond your data max)
+    # ✅ Default end date = today (clamped to available data range)
     today = date.today()
-    default_end = min(today, max_d)
+    default_end = min(max_d, max(min_d, today))
 
     with st.expander("Choose a date range", expanded=True):
         d1 = st.date_input("Start date", min_d, key="start_date")
         d2 = st.date_input("End date", default_end, key="end_date")
-
 
     if d1 > d2:
         d1, d2 = d2, d1
@@ -237,7 +236,6 @@ with left:
 
 # ---------- CUSTOMER TREND ----------
 with right:
-    # If multiple customers selected, show "Selected Customers"
     if len(sel_customers) == 1:
         customer_title = sel_customers[0]
     else:
@@ -268,18 +266,15 @@ with right:
             tmp["PERIOD"] = "All"
             xorder = ["All"]
             tickvals, ticktext = xorder, xorder
-
         elif trend_mode == "Day":
             tmp["PERIOD"] = tmp[DATE_COL].dt.date.astype(str)
             xorder = sorted(tmp["PERIOD"].unique())
             tickvals, ticktext = xorder, xorder
-
         elif trend_mode == "Week":
             iso = tmp[DATE_COL].dt.isocalendar()
             tmp["PERIOD"] = iso["year"].astype(str) + "-W" + iso["week"].astype(int).astype(str).str.zfill(2)
             xorder = sorted(tmp["PERIOD"].unique())
             tickvals, ticktext = xorder, xorder
-
         else:  # Month
             tmp["PERIOD"] = tmp[DATE_COL].dt.to_period("M").astype(str)
             xorder = sorted(tmp["PERIOD"].unique())
@@ -303,7 +298,6 @@ with right:
             legend=dict(font=dict(size=14)),
             margin=dict(l=10, r=10, t=10, b=10),
         )
-
         fig_stack.update_xaxes(
             categoryorder="array",
             categoryarray=xorder,
