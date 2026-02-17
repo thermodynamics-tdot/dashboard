@@ -109,7 +109,15 @@ with st.sidebar:
 
     min_d = df[DATE_COL].min().date()
     max_d = df[DATE_COL].max().date()
-    d1, d2 = st.date_input("Date range", (min_d, max_d))
+
+    # ✅ Date range (opens BELOW): use two inputs instead of a range picker
+    with st.expander("Choose a date range", expanded=True):
+        d1 = st.date_input("Start date", min_d, key="start_date")
+        d2 = st.date_input("End date", max_d, key="end_date")
+
+    # Ensure proper ordering if user picks reversed dates
+    if d1 > d2:
+        d1, d2 = d2, d1
 
 # Filter
 mask = (df[DATE_COL].dt.date >= d1) & (df[DATE_COL].dt.date <= d2)
@@ -121,7 +129,12 @@ dff = df.loc[mask].copy()
 st.title("Service Calls Dashboard")
 
 k1, k2, k3 = st.columns(3)
-total_calls = dff[CALL_ID_COL].nunique() if CALL_ID_COL in dff.columns and CALL_ID_COL else len(dff)
+
+if CALL_ID_COL and CALL_ID_COL in dff.columns:
+    total_calls = dff[CALL_ID_COL].nunique()
+else:
+    total_calls = len(dff)
+
 k1.metric("Total Calls", int(total_calls))
 k2.metric("Completed", int((dff[STATUS_COL] == "COMPLETED").sum()))
 k3.metric("Not Attended", int((dff[STATUS_COL] == "NOT ATTENDED").sum()))
@@ -173,7 +186,6 @@ with right:
 
     chart_col, side_col = st.columns([3.3, 1.2], gap="large")
 
-    # View should be BELOW legend area — so we use Plotly legend and then place View under it
     with side_col:
         st.markdown("**View**")
         trend_mode = st.selectbox(
