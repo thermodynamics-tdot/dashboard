@@ -4,14 +4,18 @@ import plotly.express as px
 from datetime import date
 
 # -------------------- Page --------------------
-st.set_page_config(page_title="Service Calls Dashboard", layout="wide")
+st.set_page_config(
+    page_title="Service Calls Dashboard",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
 # -------------------- Config --------------------
-FILE_NAME = "CALL RECORDS 2026.xlsx"  # in repo root
+FILE_NAME = "CALL RECORDS 2026.xlsx"
 
 DATE_COL = "DATE"
 CUSTOMER_COL = "CUSTOMER"
-STATUS_COL = "CALL STATUS"           # will be auto-mapped if different
+STATUS_COL = "CALL STATUS"
 TECH_COL = "TECH 1"
 CALL_ID_COL = "TD REPORT NO."
 
@@ -23,7 +27,6 @@ def load_data():
     return df
 
 def ensure_col(df, want):
-    """Return actual column name in df that matches want or known aliases."""
     want_n = " ".join(want.strip().upper().split())
     if want_n in df.columns:
         return want_n
@@ -40,7 +43,6 @@ def ensure_col(df, want):
         a_n = " ".join(a.strip().upper().split())
         if a_n in df.columns:
             return a_n
-
     return None
 
 def status_palette():
@@ -52,7 +54,6 @@ def status_palette():
     }
 
 def normalize_status(s):
-    # Treat truly empty + whitespace-only as blank
     if pd.isna(s):
         return "BLANK"
     s = str(s).strip().upper()
@@ -67,10 +68,6 @@ def normalize_text(x):
     return x if x else None
 
 def multiselect_with_all(label, options, default_all=True, key=None):
-    """
-    Multiselect with (All). If (All) selected (or user selects nothing),
-    return None => meaning DON'T filter this field.
-    """
     options = [o for o in options if o is not None]
     options_sorted = sorted(options, key=lambda s: str(s).lower())
 
@@ -81,56 +78,50 @@ def multiselect_with_all(label, options, default_all=True, key=None):
     chosen = st.multiselect(label, ui_options, default=default, key=key)
 
     if all_label in chosen or len(chosen) == 0:
-        return None  # IMPORTANT: no filtering
+        return None
     return chosen
 
 # -------------------- Load --------------------
 df = load_data()
 
-# Resolve real column names (avoid KeyError)
-DATE_COL_REAL = ensure_col(df, DATE_COL)
-CUSTOMER_COL_REAL = ensure_col(df, CUSTOMER_COL)
-STATUS_COL_REAL = ensure_col(df, STATUS_COL)
-TECH_COL_REAL = ensure_col(df, TECH_COL)
-CALL_ID_COL_REAL = ensure_col(df, CALL_ID_COL)  # can be None if not present
+DATE_COL = ensure_col(df, DATE_COL)
+CUSTOMER_COL = ensure_col(df, CUSTOMER_COL)
+STATUS_COL = ensure_col(df, STATUS_COL)
+TECH_COL = ensure_col(df, TECH_COL)
+CALL_ID_COL = ensure_col(df, CALL_ID_COL)
 
-missing = [name for name, real in [
-    ("DATE", DATE_COL_REAL),
-    ("CUSTOMER", CUSTOMER_COL_REAL),
-    ("CALL STATUS", STATUS_COL_REAL),
-] if real is None]
-
-if missing:
-    st.error(f"Missing required columns in Excel: {', '.join(missing)}")
-    st.write("Available columns:", list(df.columns))
+if None in [DATE_COL, CUSTOMER_COL, STATUS_COL]:
+    st.error("Missing required columns in Excel.")
     st.stop()
 
-# Use resolved names from here on
-DATE_COL = DATE_COL_REAL
-CUSTOMER_COL = CUSTOMER_COL_REAL
-STATUS_COL = STATUS_COL_REAL
-TECH_COL = TECH_COL_REAL
-CALL_ID_COL = CALL_ID_COL_REAL  # may be None
-
-# Parse date
 df[DATE_COL] = pd.to_datetime(df[DATE_COL], errors="coerce")
 df = df.dropna(subset=[DATE_COL]).copy()
 
-# Normalize fields
 df[STATUS_COL] = df[STATUS_COL].apply(normalize_status)
+df = df[df[STATUS_COL] != "BLANK"].copy()
+
 df[CUSTOMER_COL] = df[CUSTOMER_COL].apply(normalize_text)
 if TECH_COL and TECH_COL in df.columns:
     df[TECH_COL] = df[TECH_COL].apply(normalize_text)
 
-# ✅ Keep ONLY rows where status is actually filled
-df = df[df[STATUS_COL] != "BLANK"].copy()
-
-# -------------------- Sidebar (wider) --------------------
+# -------------------- Sidebar Width + Arrow Fix --------------------
 st.markdown(
     """
     <style>
       section[data-testid="stSidebar"] { width: 340px !important; }
       section[data-testid="stSidebar"] > div { width: 340px !important; }
+
+      /* Fix toggle arrow position */
+      [data-testid="collapsedControl"] {
+        position: fixed;
+        top: 60px;
+        left: 340px;
+        z-index: 9999;
+      }
+
+      section[data-testid="stSidebar"][aria-expanded="false"] ~ div [data-testid="collapsedControl"] {
+        left: 0px;
+      }
     </style>
     """,
     unsafe_allow_html=True,
@@ -139,28 +130,25 @@ st.markdown(
 colors = status_palette()
 status_order = ["COMPLETED", "ATTENDED", "NOT ATTENDED"]
 
+# -------------------- Sidebar --------------------
 with st.sidebar:
     st.markdown("## Filters")
 
-    # Customers (All = no filter; blanks in CUSTOMER will still be included)
     customer_options = df[CUSTOMER_COL].dropna().unique().tolist()
-    sel_customers = multiselect_with_all("Customer", customer_options, default_all=True, key="cust_multi")
+    sel_customers = multiselect_with_all("Customer", customer_options, key="cust_multi")
 
-    # Technicians (All = no filter; blanks in TECH will still be included)
     if TECH_COL and TECH_COL in df.columns:
         tech_options = df[TECH_COL].dropna().unique().tolist()
-        sel_techs = multiselect_with_all("Technician", tech_options, default_all=True, key="tech_multi")
+        sel_techs = multiselect_with_all("Technician", tech_options, key="tech_multi")
     else:
         sel_techs = None
 
-    # Status dropdown (single) — keeps your original behavior
     status_dropdown = ["(All)"] + status_order
     sel_status = st.selectbox("Status", status_dropdown, index=0)
 
     min_d = df[DATE_COL].min().date()
     max_d = df[DATE_COL].max().date()
 
-    # ✅ End date shows TODAY in UI
     today = date.today()
     if st.session_state.get("_end_date_last_set") != today:
         st.session_state["end_date"] = today
@@ -173,35 +161,28 @@ with st.sidebar:
     if d1 > d2_ui:
         d1, d2_ui = d2_ui, d1
 
-# -------------------- Filter data --------------------
-# ✅ Filtering cannot go beyond your actual data max date
+# -------------------- Filter --------------------
 d2 = min(d2_ui, max_d)
 
 mask = (df[DATE_COL].dt.date >= d1) & (df[DATE_COL].dt.date <= d2)
 
-# Customers: only filter if user picked specific customers
 if sel_customers is not None:
     mask &= df[CUSTOMER_COL].isin(sel_customers)
 
-# Technicians: only filter if user picked specific techs
 if sel_techs is not None and TECH_COL and TECH_COL in df.columns:
     mask &= df[TECH_COL].isin(sel_techs)
 
-# Status: only filter if user picked a specific status
 if sel_status != "(All)":
     mask &= (df[STATUS_COL] == sel_status)
 
 dff = df.loc[mask].copy()
 
-# -------------------- Title + KPIs --------------------
+# -------------------- KPIs --------------------
 st.title("Service Calls Dashboard")
 
 k1, k2, k3 = st.columns(3)
 
-if CALL_ID_COL and CALL_ID_COL in dff.columns:
-    total_calls = dff[CALL_ID_COL].nunique()
-else:
-    total_calls = len(dff)
+total_calls = dff[CALL_ID_COL].nunique() if CALL_ID_COL in dff.columns else len(dff)
 
 k1.metric("Total Calls", int(total_calls))
 k2.metric("Completed", int((dff[STATUS_COL] == "COMPLETED").sum()))
@@ -210,12 +191,10 @@ k3.metric("Not Attended", int((dff[STATUS_COL] == "NOT ATTENDED").sum()))
 # -------------------- Charts --------------------
 left, right = st.columns(2, gap="large")
 
-# For charts: when status is "(All)", show only the main 3 statuses (like your original)
 chart_base = dff.copy()
 if sel_status == "(All)":
     chart_base = chart_base[chart_base[STATUS_COL].isin(status_order)].copy()
 
-# ---------- PIE ----------
 with left:
     st.subheader("Call Status")
 
@@ -234,133 +213,38 @@ with left:
         values="COUNT",
         color="STATUS",
         color_discrete_map=colors,
-        category_orders={"STATUS": status_order},
-    )
-    fig_pie.update_layout(
-        legend_title_text="",
-        legend=dict(font=dict(size=14)),
-        margin=dict(l=10, r=10, t=10, b=10),
     )
     st.plotly_chart(fig_pie, use_container_width=True)
-
-# ---------- CUSTOMER TREND ----------
-with right:
-    if sel_customers is not None and len(sel_customers) == 1:
-        customer_title = sel_customers[0]
-    else:
-        customer_title = "Selected Customers"
-    st.subheader(customer_title)
-
-    full_range = (d1 == min_d and d2 == max_d)
-    default_mode = "Total" if full_range else "Month"
-
-    chart_col, side_col = st.columns([3.3, 1.2], gap="large")
-
-    with side_col:
-        st.markdown("**View**")
-        trend_mode = st.selectbox(
-            "",
-            ["Total", "Day", "Week", "Month"],
-            index=["Total", "Day", "Week", "Month"].index(default_mode),
-            label_visibility="collapsed",
-        )
-
-    tmp = chart_base.copy()
-
-    if len(tmp) == 0:
-        with chart_col:
-            st.info("No data for the selected filters.")
-    else:
-        if trend_mode == "Total":
-            tmp["PERIOD"] = "All"
-            xorder = ["All"]
-            tickvals, ticktext = xorder, xorder
-        elif trend_mode == "Day":
-            tmp["PERIOD"] = tmp[DATE_COL].dt.date.astype(str)
-            xorder = sorted(tmp["PERIOD"].unique())
-            tickvals, ticktext = xorder, xorder
-        elif trend_mode == "Week":
-            iso = tmp[DATE_COL].dt.isocalendar()
-            tmp["PERIOD"] = iso["year"].astype(str) + "-W" + iso["week"].astype(int).astype(str).str.zfill(2)
-            xorder = sorted(tmp["PERIOD"].unique())
-            tickvals, ticktext = xorder, xorder
-        else:  # Month
-            tmp["PERIOD"] = tmp[DATE_COL].dt.to_period("M").astype(str)
-            xorder = sorted(tmp["PERIOD"].unique())
-            tickvals = xorder
-            ticktext = [pd.to_datetime(p + "-01").strftime("%b") for p in xorder]
-
-        grp = tmp.groupby(["PERIOD", STATUS_COL]).size().reset_index(name="COUNT")
-
-        fig_stack = px.bar(
-            grp,
-            x="PERIOD",
-            y="COUNT",
-            color=STATUS_COL,
-            barmode="stack",
-            color_discrete_map=colors,
-            category_orders={"PERIOD": xorder, STATUS_COL: status_order},
-        )
-
-        fig_stack.update_layout(
-            legend_title_text="",
-            legend=dict(font=dict(size=14)),
-            margin=dict(l=10, r=10, t=10, b=10),
-        )
-        fig_stack.update_xaxes(
-            categoryorder="array",
-            categoryarray=xorder,
-            tickmode="array",
-            tickvals=tickvals,
-            ticktext=ticktext,
-            title_text="",
-        )
-        fig_stack.update_yaxes(title_text="Count")
-
-        with chart_col:
-            st.plotly_chart(fig_stack, use_container_width=True)
 
 # -------------------- Technician Performance --------------------
 st.markdown("## Technician Performance (Sorted by Completion Rate)")
 
 if TECH_COL and TECH_COL in dff.columns:
-    tech_df = chart_base.copy()
+    tech_counts = dff.groupby([TECH_COL, STATUS_COL]).size().reset_index(name="COUNT")
 
-    if len(tech_df) == 0:
-        st.info("No technician data for the selected filters.")
-    else:
-        tech_counts = tech_df.groupby([TECH_COL, STATUS_COL]).size().reset_index(name="COUNT")
+    totals = tech_counts.groupby(TECH_COL)["COUNT"].sum().rename("TOTAL")
+    completed = (
+        tech_counts[tech_counts[STATUS_COL] == "COMPLETED"]
+        .groupby(TECH_COL)["COUNT"]
+        .sum()
+        .rename("COMPLETED")
+    )
 
-        totals = tech_counts.groupby(TECH_COL)["COUNT"].sum().rename("TOTAL")
-        completed = (
-            tech_counts[tech_counts[STATUS_COL] == "COMPLETED"]
-            .groupby(TECH_COL)["COUNT"]
-            .sum()
-            .rename("COMPLETED")
-        )
+    rates = pd.concat([totals, completed], axis=1).fillna(0)
+    rates["COMP_RATE"] = rates["COMPLETED"] / rates["TOTAL"].where(rates["TOTAL"] != 0, 1)
+    order = rates.sort_values("COMP_RATE", ascending=False).index.tolist()
 
-        rates = pd.concat([totals, completed], axis=1).fillna(0)
-        rates["COMP_RATE"] = rates["COMPLETED"] / rates["TOTAL"].where(rates["TOTAL"] != 0, 1)
-        order = rates.sort_values("COMP_RATE", ascending=False).index.tolist()
-
-        fig_tech = px.bar(
-            tech_counts,
-            y=TECH_COL,
-            x="COUNT",
-            color=STATUS_COL,
-            barmode="stack",
-            orientation="h",
-            color_discrete_map=colors,
-            category_orders={TECH_COL: order, STATUS_COL: status_order},
-        )
-        fig_tech.update_layout(
-            legend_title_text="",
-            legend=dict(font=dict(size=14)),
-            margin=dict(l=10, r=10, t=10, b=10),
-            yaxis_title="",
-            xaxis_title="Count",
-        )
-        st.plotly_chart(fig_tech, use_container_width=True)
+    fig_tech = px.bar(
+        tech_counts,
+        y=TECH_COL,
+        x="COUNT",
+        color=STATUS_COL,
+        barmode="stack",
+        orientation="h",
+        color_discrete_map=colors,
+        category_orders={TECH_COL: order},
+    )
+    st.plotly_chart(fig_tech, use_container_width=True)
 
 # -------------------- Show Data --------------------
 with st.expander("Show data"):
