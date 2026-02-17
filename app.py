@@ -147,21 +147,9 @@ with st.sidebar:
     else:
         sel_techs = None
 
-    # Status dropdown (use statuses present; keep main 3 first)
-    statuses_in_file = df[STATUS_COL].dropna().astype(str).unique().tolist()
-    preferred = [s for s in status_order if s in statuses_in_file]
-    remaining = sorted([s for s in statuses_in_file if s not in preferred], key=lambda x: str(x).lower())
-    status_options = preferred + remaining
-
-    sel_statuses = dropdown_checkbox_filter(
-        "Status",
-        status_options,
-        key_prefix="status",
-        default_all=True,
-        height_px=160,
-        expanded=False,
-    )
-
+    # ✅ Status dropdown (single)
+    status_dropdown = ["(All)"] + status_order
+    sel_status = st.selectbox("Status", status_dropdown, index=0)
 
     min_d = df[DATE_COL].min().date()
     max_d = df[DATE_COL].max().date()
