@@ -88,7 +88,7 @@ CALL_ID_COL = CALL_ID_COL_REAL  # may be None
 df[DATE_COL] = pd.to_datetime(df[DATE_COL], errors="coerce")
 df = df.dropna(subset=[DATE_COL]).copy()
 
-# Normalize status (keep BLANK rows)
+# Normalize status (keep BLANK rows in dataset)
 df[STATUS_COL] = df[STATUS_COL].apply(normalize_status)
 
 # -------------------- Sidebar (wider) --------------------
@@ -102,8 +102,8 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-status_order = ["COMPLETED", "ATTENDED", "NOT ATTENDED"]  # main statuses
 colors = status_palette()
+status_order = ["COMPLETED", "ATTENDED", "NOT ATTENDED"]
 
 with st.sidebar:
     st.markdown("## Filters")
@@ -111,18 +111,9 @@ with st.sidebar:
     customers = ["(All)"] + sorted(df[CUSTOMER_COL].dropna().astype(str).unique().tolist())
     sel_customer = st.selectbox("Customer", customers)
 
-    # ✅ Status filter (connected to all charts)
-    all_statuses = sorted(df[STATUS_COL].dropna().astype(str).unique().tolist())
-    # Put common ones first if they exist
-    preferred = [s for s in status_order if s in all_statuses]
-    remaining = [s for s in all_statuses if s not in preferred]
-    status_choices = preferred + remaining
-
-    sel_status = st.multiselect(
-        "Status",
-        options=status_choices,
-        default=preferred if preferred else status_choices,
-    )
+    # ✅ Status dropdown like you want
+    status_dropdown = ["(All)"] + status_order
+    sel_status = st.selectbox("Status", status_dropdown, index=0)
 
     min_d = df[DATE_COL].min().date()
     max_d = df[DATE_COL].max().date()
@@ -132,7 +123,6 @@ with st.sidebar:
         d1 = st.date_input("Start date", min_d, key="start_date")
         d2 = st.date_input("End date", max_d, key="end_date")
 
-    # Ensure proper ordering if user picks reversed dates
     if d1 > d2:
         d1, d2 = d2, d1
 
@@ -142,11 +132,9 @@ mask = (df[DATE_COL].dt.date >= d1) & (df[DATE_COL].dt.date <= d2)
 if sel_customer != "(All)":
     mask &= (df[CUSTOMER_COL].astype(str) == sel_customer)
 
-if sel_status:
-    mask &= df[STATUS_COL].isin(sel_status)
-else:
-    # If user unselects everything, show nothing
-    mask &= False
+# ✅ Apply status filter to EVERYTHING (KPIs + charts + table)
+if sel_status != "(All)":
+    mask &= (df[STATUS_COL] == sel_status)
 
 dff = df.loc[mask].copy()
 
@@ -167,24 +155,19 @@ k3.metric("Not Attended", int((dff[STATUS_COL] == "NOT ATTENDED").sum()))
 # -------------------- Charts --------------------
 left, right = st.columns(2, gap="large")
 
-# For charts, we typically hide BLANK unless the user explicitly selected it
-show_statuses_for_charts = [s for s in sel_status if s != "BLANK"] if sel_status else []
-if not show_statuses_for_charts:
-    # fallback: if user only selected BLANK (or none), show what they selected
-    show_statuses_for_charts = sel_status
+# When viewing "(All)", hide BLANK in charts (but keep it in table)
+chart_base = dff.copy()
+if sel_status == "(All)":
+    chart_base = chart_base[chart_base[STATUS_COL].isin(status_order)].copy()
 
 # ---------- PIE ----------
 with left:
     st.subheader("Call Status")
 
-    chart_df = dff.copy()
-    if show_statuses_for_charts:
-        chart_df = chart_df[chart_df[STATUS_COL].isin(show_statuses_for_charts)].copy()
-
     status_counts = (
-        chart_df[STATUS_COL]
+        chart_base[STATUS_COL]
         .value_counts()
-        .reindex([s for s in status_order if s in show_statuses_for_charts] + [s for s in show_statuses_for_charts if s not in status_order])
+        .reindex(status_order)
         .dropna()
         .reset_index()
     )
@@ -196,6 +179,7 @@ with left:
         values="COUNT",
         color="STATUS",
         color_discrete_map=colors,
+        category_orders={"STATUS": status_order},
     )
     fig_pie.update_layout(
         legend_title_text="",
@@ -223,9 +207,7 @@ with right:
             label_visibility="collapsed",
         )
 
-    tmp = dff.copy()
-    if show_statuses_for_charts:
-        tmp = tmp[tmp[STATUS_COL].isin(show_statuses_for_charts)].copy()
+    tmp = chart_base.copy()
 
     if len(tmp) == 0:
         with chart_col:
@@ -262,7 +244,7 @@ with right:
             color=STATUS_COL,
             barmode="stack",
             color_discrete_map=colors,
-            category_orders={"PERIOD": xorder},
+            category_orders={"PERIOD": xorder, STATUS_COL: status_order},
         )
 
         fig_stack.update_layout(
@@ -284,13 +266,11 @@ with right:
         with chart_col:
             st.plotly_chart(fig_stack, use_container_width=True)
 
-# -------------------- Technician Performance (stacked ROW) --------------------
+# -------------------- Technician Performance --------------------
 st.markdown("## Technician Performance (Sorted by Completion Rate)")
 
 if TECH_COL and TECH_COL in dff.columns:
-    tech_df = dff.copy()
-    if show_statuses_for_charts:
-        tech_df = tech_df[tech_df[STATUS_COL].isin(show_statuses_for_charts)].copy()
+    tech_df = chart_base.copy()
 
     if len(tech_df) == 0:
         st.info("No technician data for the selected filters.")
@@ -317,7 +297,7 @@ if TECH_COL and TECH_COL in dff.columns:
             barmode="stack",
             orientation="h",
             color_discrete_map=colors,
-            category_orders={TECH_COL: order},
+            category_orders={TECH_COL: order, STATUS_COL: status_order},
         )
         fig_tech.update_layout(
             legend_title_text="",
