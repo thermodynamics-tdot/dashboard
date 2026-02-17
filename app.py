@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+from datetime import date
 
 # -------------------- Page --------------------
 st.set_page_config(page_title="Service Calls Dashboard", layout="wide")
@@ -64,8 +65,8 @@ def normalize_text(x):
 
 def multiselect_with_all(label, options, default_all=True, key=None):
     """
-    Streamlit multiselect that behaves like a checkbox list (built-in UI),
-    with an (All) option that selects everything.
+    Streamlit multiselect with an (All) option that selects everything.
+    Treat empty selection as All.
     """
     options = [o for o in options if o is not None]
     options_sorted = sorted(options, key=lambda s: str(s).lower())
@@ -76,7 +77,7 @@ def multiselect_with_all(label, options, default_all=True, key=None):
     chosen = st.multiselect(label, ui_options, default=default, key=key)
 
     if all_label in chosen or len(chosen) == 0:
-        return options_sorted  # treat empty as all to avoid "no data" confusion
+        return options_sorted
     return chosen
 
 # -------------------- Load --------------------
@@ -114,7 +115,7 @@ df = df.dropna(subset=[DATE_COL]).copy()
 # Normalize status (keep BLANK rows)
 df[STATUS_COL] = df[STATUS_COL].apply(normalize_status)
 
-# Normalize customer/tech to clean strings (prevents weird blanks)
+# Normalize customer/tech to clean strings
 df[CUSTOMER_COL] = df[CUSTOMER_COL].apply(normalize_text)
 if TECH_COL and TECH_COL in df.columns:
     df[TECH_COL] = df[TECH_COL].apply(normalize_text)
@@ -136,33 +137,43 @@ status_order = ["COMPLETED", "ATTENDED", "NOT ATTENDED"]
 with st.sidebar:
     st.markdown("## Filters")
 
-    # ✅ Customers (multi-select with checkboxes)
+    # Customers
     customer_options = df[CUSTOMER_COL].dropna().unique().tolist()
     sel_customers = multiselect_with_all("Customer", customer_options, default_all=True, key="cust_multi")
 
-    # ✅ Technicians (multi-select with checkboxes)
+    # Technicians
     if TECH_COL and TECH_COL in df.columns:
         tech_options = df[TECH_COL].dropna().unique().tolist()
         sel_techs = multiselect_with_all("Technician", tech_options, default_all=True, key="tech_multi")
     else:
         sel_techs = None
 
-    # ✅ Status dropdown (single)
+    # Status dropdown (single)
     status_dropdown = ["(All)"] + status_order
     sel_status = st.selectbox("Status", status_dropdown, index=0)
 
     min_d = df[DATE_COL].min().date()
     max_d = df[DATE_COL].max().date()
 
-    # ✅ Date range (opens BELOW): use two inputs instead of a range picker
+    # ✅ Show today's date in UI, even if data doesn't have it
+    today = date.today()
+
+    # ✅ Reset end_date to today once per new day (unless user changed it after load)
+    if st.session_state.get("_end_date_last_set") != today:
+        st.session_state["end_date"] = today
+        st.session_state["_end_date_last_set"] = today
+
     with st.expander("Choose a date range", expanded=True):
         d1 = st.date_input("Start date", min_d, key="start_date")
-        d2 = st.date_input("End date", max_d, key="end_date")
+        d2_ui = st.date_input("End date", key="end_date")
 
-    if d1 > d2:
-        d1, d2 = d2, d1
+    if d1 > d2_ui:
+        d1, d2_ui = d2_ui, d1
 
 # -------------------- Filter data --------------------
+# ✅ Use data max for filtering if UI end date is beyond available data
+d2 = min(d2_ui, max_d)
+
 mask = (df[DATE_COL].dt.date >= d1) & (df[DATE_COL].dt.date <= d2)
 
 # Customers
@@ -232,11 +243,7 @@ with left:
 
 # ---------- CUSTOMER TREND ----------
 with right:
-    # If multiple customers selected, show "Selected Customers"
-    if len(sel_customers) == 1:
-        customer_title = sel_customers[0]
-    else:
-        customer_title = "Selected Customers"
+    customer_title = sel_customers[0] if len(sel_customers) == 1 else "Selected Customers"
     st.subheader(customer_title)
 
     full_range = (d1 == min_d and d2 == max_d)
@@ -263,18 +270,15 @@ with right:
             tmp["PERIOD"] = "All"
             xorder = ["All"]
             tickvals, ticktext = xorder, xorder
-
         elif trend_mode == "Day":
             tmp["PERIOD"] = tmp[DATE_COL].dt.date.astype(str)
             xorder = sorted(tmp["PERIOD"].unique())
             tickvals, ticktext = xorder, xorder
-
         elif trend_mode == "Week":
             iso = tmp[DATE_COL].dt.isocalendar()
             tmp["PERIOD"] = iso["year"].astype(str) + "-W" + iso["week"].astype(int).astype(str).str.zfill(2)
             xorder = sorted(tmp["PERIOD"].unique())
             tickvals, ticktext = xorder, xorder
-
         else:  # Month
             tmp["PERIOD"] = tmp[DATE_COL].dt.to_period("M").astype(str)
             xorder = sorted(tmp["PERIOD"].unique())
@@ -298,7 +302,6 @@ with right:
             legend=dict(font=dict(size=14)),
             margin=dict(l=10, r=10, t=10, b=10),
         )
-
         fig_stack.update_xaxes(
             categoryorder="array",
             categoryarray=xorder,
