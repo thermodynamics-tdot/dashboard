@@ -62,22 +62,73 @@ def normalize_text(x):
     x = str(x).strip()
     return x if x else None
 
-def multiselect_with_all(label, options, default_all=True, key=None):
+def checkbox_list_filter(title, options, key_prefix, default_all=True, height_px=220):
     """
-    Streamlit multiselect that behaves like a checkbox list (built-in UI),
-    with an (All) option that selects everything.
+    Scrollable checkbox list:
+    label on LEFT, checkbox on RIGHT.
+    Returns list of selected values.
     """
     options = [o for o in options if o is not None]
-    options_sorted = sorted(options, key=lambda s: str(s).lower())
-    all_label = "(All)"
-    ui_options = [all_label] + options_sorted
+    options = sorted(options, key=lambda s: str(s).lower())
 
-    default = [all_label] if default_all else []
-    chosen = st.multiselect(label, ui_options, default=default, key=key)
+    st.markdown(f"**{title}**")
 
-    if all_label in chosen or len(chosen) == 0:
-        return options_sorted  # treat empty as all to avoid "no data" confusion
-    return chosen
+    # Search box
+    q = st.text_input(
+        "",
+        placeholder=f"Search {title.lower()}...",
+        key=f"{key_prefix}_search",
+        label_visibility="collapsed",
+    )
+
+    visible = options
+    if q:
+        qn = q.strip().lower()
+        visible = [o for o in options if qn in str(o).lower()]
+
+    # Select all toggle
+    all_key = f"{key_prefix}_all"
+    if all_key not in st.session_state:
+        st.session_state[all_key] = default_all
+
+    colL, colR = st.columns([6, 1])
+    with colL:
+        st.write("All")
+    with colR:
+        select_all = st.checkbox("", key=all_key, label_visibility="collapsed")
+
+    # Scroll area
+    st.markdown(
+        f"""
+        <div style="height:{height_px}px; overflow:auto; border:1px solid rgba(49,51,63,0.2);
+                    border-radius:8px; padding:8px; background:rgba(255,255,255,0.02);">
+        """,
+        unsafe_allow_html=True,
+    )
+
+    selected = []
+    for opt in visible:
+        k = f"{key_prefix}_opt_{hash(opt)}"
+        if k not in st.session_state:
+            st.session_state[k] = default_all
+
+        # If "All" is checked, force all visible options on
+        if select_all:
+            st.session_state[k] = True
+
+        a, b = st.columns([6, 1])
+        with a:
+            st.write(str(opt))
+        with b:
+            st.checkbox("", key=k, label_visibility="collapsed")
+
+        if st.session_state[k]:
+            selected.append(opt)
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    # If user unchecks everything, treat as "All" to avoid empty dashboard
+    return selected if selected else options
 
 # -------------------- Load --------------------
 df = load_data()
@@ -111,10 +162,8 @@ CALL_ID_COL = CALL_ID_COL_REAL  # may be None
 df[DATE_COL] = pd.to_datetime(df[DATE_COL], errors="coerce")
 df = df.dropna(subset=[DATE_COL]).copy()
 
-# Normalize status (keep BLANK rows)
+# Normalize fields
 df[STATUS_COL] = df[STATUS_COL].apply(normalize_status)
-
-# Normalize customer/tech to clean strings (prevents weird blanks)
 df[CUSTOMER_COL] = df[CUSTOMER_COL].apply(normalize_text)
 if TECH_COL and TECH_COL in df.columns:
     df[TECH_COL] = df[TECH_COL].apply(normalize_text)
@@ -136,47 +185,65 @@ status_order = ["COMPLETED", "ATTENDED", "NOT ATTENDED"]
 with st.sidebar:
     st.markdown("## Filters")
 
-    # ✅ Customers (multi-select with checkboxes)
+    # Customers (checkbox list)
     customer_options = df[CUSTOMER_COL].dropna().unique().tolist()
-    sel_customers = multiselect_with_all("Customer", customer_options, default_all=True, key="cust_multi")
+    sel_customers = checkbox_list_filter(
+        "Customer",
+        customer_options,
+        key_prefix="cust",
+        default_all=True,
+        height_px=220,
+    )
 
-    # ✅ Technicians (multi-select with checkboxes)
+    # Technicians (checkbox list)
     if TECH_COL and TECH_COL in df.columns:
         tech_options = df[TECH_COL].dropna().unique().tolist()
-        sel_techs = multiselect_with_all("Technician", tech_options, default_all=True, key="tech_multi")
+        sel_techs = checkbox_list_filter(
+            "Technician",
+            tech_options,
+            key_prefix="tech",
+            default_all=True,
+            height_px=220,
+        )
     else:
         sel_techs = None
 
-    # ✅ Status dropdown (single)
-    status_dropdown = ["(All)"] + status_order
-    sel_status = st.selectbox("Status", status_dropdown, index=0)
+    # ✅ Status (checkbox list) — same style as customer/technician
+    # Use the actual unique statuses in your file, but keep the 3 main ones first.
+    statuses_in_file = df[STATUS_COL].dropna().astype(str).unique().tolist()
+    preferred = [s for s in status_order if s in statuses_in_file]
+    remaining = sorted([s for s in statuses_in_file if s not in preferred], key=lambda x: str(x).lower())
+    status_options = preferred + remaining
+
+    sel_statuses = checkbox_list_filter(
+        "Status",
+        status_options,
+        key_prefix="status",
+        default_all=True,
+        height_px=160,
+    )
 
     min_d = df[DATE_COL].min().date()
     max_d = df[DATE_COL].max().date()
 
-    # ✅ Date range (opens BELOW): use two inputs instead of a range picker
+    # Date range (opens below)
     with st.expander("Choose a date range", expanded=True):
         d1 = st.date_input("Start date", min_d, key="start_date")
         d2 = st.date_input("End date", max_d, key="end_date")
-
     if d1 > d2:
         d1, d2 = d2, d1
 
 # -------------------- Filter data --------------------
 mask = (df[DATE_COL].dt.date >= d1) & (df[DATE_COL].dt.date <= d2)
 
-# Customers
 if sel_customers:
     mask &= df[CUSTOMER_COL].isin(sel_customers)
 
-# Technicians
-if sel_techs is not None and TECH_COL and TECH_COL in df.columns:
-    if sel_techs:
-        mask &= df[TECH_COL].isin(sel_techs)
+if sel_techs is not None and sel_techs:
+    mask &= df[TECH_COL].isin(sel_techs)
 
-# Status
-if sel_status != "(All)":
-    mask &= (df[STATUS_COL] == sel_status)
+if sel_statuses:
+    mask &= df[STATUS_COL].isin(sel_statuses)
 
 dff = df.loc[mask].copy()
 
@@ -197,20 +264,27 @@ k3.metric("Not Attended", int((dff[STATUS_COL] == "NOT ATTENDED").sum()))
 # -------------------- Charts --------------------
 left, right = st.columns(2, gap="large")
 
-# For charts: when status is "(All)", hide BLANK so charts match your original
+# Charts: keep original look by hiding BLANK unless user explicitly selected it
 chart_base = dff.copy()
-if sel_status == "(All)":
-    chart_base = chart_base[chart_base[STATUS_COL].isin(status_order)].copy()
+if "BLANK" in chart_base[STATUS_COL].unique():
+    if "BLANK" not in sel_statuses:
+        chart_base = chart_base[chart_base[STATUS_COL] != "BLANK"].copy()
 
 # ---------- PIE ----------
 with left:
     st.subheader("Call Status")
 
+    # Keep consistent order for the 3 main statuses; append any others selected
+    selected_set = set(sel_statuses) if sel_statuses else set()
+    chart_status_order = [s for s in status_order if s in selected_set]
+    extras = [s for s in sel_statuses if s not in chart_status_order]
+    chart_status_order = chart_status_order + extras
+
     status_counts = (
         chart_base[STATUS_COL]
         .value_counts()
-        .reindex(status_order)
-        .dropna()
+        .reindex(chart_status_order)
+        .fillna(0)
         .reset_index()
     )
     status_counts.columns = ["STATUS", "COUNT"]
@@ -221,7 +295,7 @@ with left:
         values="COUNT",
         color="STATUS",
         color_discrete_map=colors,
-        category_orders={"STATUS": status_order},
+        category_orders={"STATUS": chart_status_order},
     )
     fig_pie.update_layout(
         legend_title_text="",
@@ -232,14 +306,13 @@ with left:
 
 # ---------- CUSTOMER TREND ----------
 with right:
-    # If multiple customers selected, show "Selected Customers"
     if len(sel_customers) == 1:
         customer_title = sel_customers[0]
     else:
         customer_title = "Selected Customers"
     st.subheader(customer_title)
 
-    full_range = (d1 == min_d and d2 == max_d)
+    full_range = (d1 == df[DATE_COL].min().date() and d2 == df[DATE_COL].max().date())
     default_mode = "Total" if full_range else "Month"
 
     chart_col, side_col = st.columns([3.3, 1.2], gap="large")
@@ -290,7 +363,7 @@ with right:
             color=STATUS_COL,
             barmode="stack",
             color_discrete_map=colors,
-            category_orders={"PERIOD": xorder, STATUS_COL: status_order},
+            category_orders={"PERIOD": xorder, STATUS_COL: chart_status_order},
         )
 
         fig_stack.update_layout(
@@ -343,7 +416,7 @@ if TECH_COL and TECH_COL in dff.columns:
             barmode="stack",
             orientation="h",
             color_discrete_map=colors,
-            category_orders={TECH_COL: order, STATUS_COL: status_order},
+            category_orders={TECH_COL: order, STATUS_COL: chart_status_order},
         )
         fig_tech.update_layout(
             legend_title_text="",
