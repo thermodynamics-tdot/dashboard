@@ -159,9 +159,13 @@ with st.sidebar:
     today = date.today()
     default_end = min(max_d, max(min_d, today))
 
+    # ✅ Force end date to today on first load (session_state otherwise keeps old value)
+    if "end_date" not in st.session_state:
+        st.session_state["end_date"] = default_end
+
     with st.expander("Choose a date range", expanded=True):
         d1 = st.date_input("Start date", min_d, key="start_date")
-        d2 = st.date_input("End date", default_end, key="end_date")
+        d2 = st.date_input("End date", key="end_date")  # value comes from session_state
 
     if d1 > d2:
         d1, d2 = d2, d1
