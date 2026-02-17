@@ -56,78 +56,6 @@ def normalize_status(s):
         return "BLANK"
     return s
 
-def normalize_text(x):
-    if pd.isna(x):
-        return None
-    x = str(x).strip()
-    return x if x else None
-
-def checkbox_list_filter(title, options, key_prefix, default_all=True, height_px=220):
-    """
-    Renders a scrollable checkbox list where the label is LEFT and the checkbox is RIGHT.
-    Returns the list of selected option values.
-    """
-    options = [o for o in options if o is not None]
-    options = sorted(options, key=lambda s: str(s).lower())
-
-    st.markdown(f"**{title}**")
-
-    # Search box (optional but handy)
-    q = st.text_input("", placeholder=f"Search {title.lower()}...", key=f"{key_prefix}_search", label_visibility="collapsed")
-
-    visible = options
-    if q:
-        qn = q.strip().lower()
-        visible = [o for o in options if qn in str(o).lower()]
-
-    # Select all
-    all_key = f"{key_prefix}_all"
-    if all_key not in st.session_state:
-        st.session_state[all_key] = default_all
-
-    colL, colR = st.columns([6, 1])
-    with colL:
-        st.write("All")
-    with colR:
-        select_all = st.checkbox("", key=all_key, label_visibility="collapsed")
-
-    # Scroll area
-    st.markdown(
-        f"""
-        <div style="height:{height_px}px; overflow:auto; border:1px solid rgba(49,51,63,0.2);
-                    border-radius:8px; padding:8px; background:rgba(255,255,255,0.02);">
-        """,
-        unsafe_allow_html=True,
-    )
-
-    selected = []
-    for opt in visible:
-        k = f"{key_prefix}_opt_{hash(opt)}"
-        if k not in st.session_state:
-            st.session_state[k] = default_all
-
-        # If "All" toggled on, force everything visible on
-        if select_all:
-            st.session_state[k] = True
-
-        a, b = st.columns([6, 1])
-        with a:
-            st.write(str(opt))
-        with b:
-            st.checkbox("", key=k, label_visibility="collapsed")
-
-        if st.session_state[k]:
-            selected.append(opt)
-
-    st.markdown("</div>", unsafe_allow_html=True)
-
-    # If user turned off "All", don't auto-change anything.
-    # If user selected none manually, treat as "no filter" (all) to avoid empty dashboard.
-    if len(selected) == 0:
-        return options
-
-    return selected
-
 # -------------------- Load --------------------
 df = load_data()
 
@@ -160,11 +88,8 @@ CALL_ID_COL = CALL_ID_COL_REAL  # may be None
 df[DATE_COL] = pd.to_datetime(df[DATE_COL], errors="coerce")
 df = df.dropna(subset=[DATE_COL]).copy()
 
-# Normalize fields
+# Normalize status (keep BLANK rows in dataset)
 df[STATUS_COL] = df[STATUS_COL].apply(normalize_status)
-df[CUSTOMER_COL] = df[CUSTOMER_COL].apply(normalize_text)
-if TECH_COL and TECH_COL in df.columns:
-    df[TECH_COL] = df[TECH_COL].apply(normalize_text)
 
 # -------------------- Sidebar (wider) --------------------
 st.markdown(
@@ -183,41 +108,33 @@ status_order = ["COMPLETED", "ATTENDED", "NOT ATTENDED"]
 with st.sidebar:
     st.markdown("## Filters")
 
-    # Customers (checkbox list)
-    customer_options = df[CUSTOMER_COL].dropna().unique().tolist()
-    sel_customers = checkbox_list_filter("Customer", customer_options, key_prefix="cust", default_all=True, height_px=220)
+    customers = ["(All)"] + sorted(df[CUSTOMER_COL].dropna().astype(str).unique().tolist())
+    sel_customer = st.selectbox("Customer", customers)
 
-    # Technicians (checkbox list)
-    if TECH_COL and TECH_COL in df.columns:
-        tech_options = df[TECH_COL].dropna().unique().tolist()
-        sel_techs = checkbox_list_filter("Technician", tech_options, key_prefix="tech", default_all=True, height_px=220)
-    else:
-        sel_techs = None
-
-    # Status (checkbox list, only the 3 you asked for)
-    sel_statuses = checkbox_list_filter("Status", status_order, key_prefix="status", default_all=True, height_px=140)
+    # ✅ Status dropdown like you want
+    status_dropdown = ["(All)"] + status_order
+    sel_status = st.selectbox("Status", status_dropdown, index=0)
 
     min_d = df[DATE_COL].min().date()
     max_d = df[DATE_COL].max().date()
 
-    # Date range (opens below)
+    # ✅ Date range (opens BELOW): use two inputs instead of a range picker
     with st.expander("Choose a date range", expanded=True):
         d1 = st.date_input("Start date", min_d, key="start_date")
         d2 = st.date_input("End date", max_d, key="end_date")
+
     if d1 > d2:
         d1, d2 = d2, d1
 
 # -------------------- Filter data --------------------
 mask = (df[DATE_COL].dt.date >= d1) & (df[DATE_COL].dt.date <= d2)
 
-if sel_customers:
-    mask &= df[CUSTOMER_COL].isin(sel_customers)
+if sel_customer != "(All)":
+    mask &= (df[CUSTOMER_COL].astype(str) == sel_customer)
 
-if sel_techs is not None and sel_techs:
-    mask &= df[TECH_COL].isin(sel_techs)
-
-if sel_statuses:
-    mask &= df[STATUS_COL].isin(sel_statuses)
+# ✅ Apply status filter to EVERYTHING (KPIs + charts + table)
+if sel_status != "(All)":
+    mask &= (df[STATUS_COL] == sel_status)
 
 dff = df.loc[mask].copy()
 
@@ -238,8 +155,10 @@ k3.metric("Not Attended", int((dff[STATUS_COL] == "NOT ATTENDED").sum()))
 # -------------------- Charts --------------------
 left, right = st.columns(2, gap="large")
 
-# base for charts: keep only the 3 statuses (matches original look)
-chart_base = dff[dff[STATUS_COL].isin(status_order)].copy()
+# When viewing "(All)", hide BLANK in charts (but keep it in table)
+chart_base = dff.copy()
+if sel_status == "(All)":
+    chart_base = chart_base[chart_base[STATUS_COL].isin(status_order)].copy()
 
 # ---------- PIE ----------
 with left:
@@ -249,7 +168,7 @@ with left:
         chart_base[STATUS_COL]
         .value_counts()
         .reindex(status_order)
-        .fillna(0)
+        .dropna()
         .reset_index()
     )
     status_counts.columns = ["STATUS", "COUNT"]
@@ -271,11 +190,7 @@ with left:
 
 # ---------- CUSTOMER TREND ----------
 with right:
-    # Title
-    if len(sel_customers) == 1:
-        customer_title = sel_customers[0]
-    else:
-        customer_title = "Selected Customers"
+    customer_title = "All Customers" if sel_customer == "(All)" else sel_customer
     st.subheader(customer_title)
 
     full_range = (d1 == min_d and d2 == max_d)
