@@ -154,10 +154,19 @@ with st.sidebar:
     min_d = df[DATE_COL].min().date()
     max_d = df[DATE_COL].max().date()
 
-    # ✅ Date range (opens BELOW): use two inputs instead of a range picker
-    with st.expander("Choose a date range", expanded=True):
-        d1 = st.date_input("Start date", min_d, key="start_date")
-        d2 = st.date_input("End date", max_d, key="end_date")
+from datetime import date  # make sure this is at the top of your file
+
+min_d = df[DATE_COL].min().date()
+max_d = df[DATE_COL].max().date()
+
+# ✅ Default end date = today (but not beyond your data max)
+today = date.today()
+default_end = min(today, max_d)
+
+with st.expander("Choose a date range", expanded=True):
+    d1 = st.date_input("Start date", min_d, key="start_date")
+    d2 = st.date_input("End date", default_end, key="end_date")
+
 
     if d1 > d2:
         d1, d2 = d2, d1
