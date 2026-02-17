@@ -56,6 +56,29 @@ def normalize_status(s):
         return "BLANK"
     return s
 
+def normalize_text(x):
+    if pd.isna(x):
+        return None
+    x = str(x).strip()
+    return x if x else None
+
+def multiselect_with_all(label, options, default_all=True, key=None):
+    """
+    Streamlit multiselect that behaves like a checkbox list (built-in UI),
+    with an (All) option that selects everything.
+    """
+    options = [o for o in options if o is not None]
+    options_sorted = sorted(options, key=lambda s: str(s).lower())
+    all_label = "(All)"
+    ui_options = [all_label] + options_sorted
+
+    default = [all_label] if default_all else []
+    chosen = st.multiselect(label, ui_options, default=default, key=key)
+
+    if all_label in chosen or len(chosen) == 0:
+        return options_sorted  # treat empty as all to avoid "no data" confusion
+    return chosen
+
 # -------------------- Load --------------------
 df = load_data()
 
@@ -88,8 +111,13 @@ CALL_ID_COL = CALL_ID_COL_REAL  # may be None
 df[DATE_COL] = pd.to_datetime(df[DATE_COL], errors="coerce")
 df = df.dropna(subset=[DATE_COL]).copy()
 
-# Normalize status (keep BLANK rows in dataset)
+# Normalize status (keep BLANK rows)
 df[STATUS_COL] = df[STATUS_COL].apply(normalize_status)
+
+# Normalize customer/tech to clean strings (prevents weird blanks)
+df[CUSTOMER_COL] = df[CUSTOMER_COL].apply(normalize_text)
+if TECH_COL and TECH_COL in df.columns:
+    df[TECH_COL] = df[TECH_COL].apply(normalize_text)
 
 # -------------------- Sidebar (wider) --------------------
 st.markdown(
@@ -108,10 +136,18 @@ status_order = ["COMPLETED", "ATTENDED", "NOT ATTENDED"]
 with st.sidebar:
     st.markdown("## Filters")
 
-    customers = ["(All)"] + sorted(df[CUSTOMER_COL].dropna().astype(str).unique().tolist())
-    sel_customer = st.selectbox("Customer", customers)
+    # ✅ Customers (multi-select with checkboxes)
+    customer_options = df[CUSTOMER_COL].dropna().unique().tolist()
+    sel_customers = multiselect_with_all("Customer", customer_options, default_all=True, key="cust_multi")
 
-    # ✅ Status dropdown like you want
+    # ✅ Technicians (multi-select with checkboxes)
+    if TECH_COL and TECH_COL in df.columns:
+        tech_options = df[TECH_COL].dropna().unique().tolist()
+        sel_techs = multiselect_with_all("Technician", tech_options, default_all=True, key="tech_multi")
+    else:
+        sel_techs = None
+
+    # ✅ Status dropdown (single)
     status_dropdown = ["(All)"] + status_order
     sel_status = st.selectbox("Status", status_dropdown, index=0)
 
@@ -129,10 +165,16 @@ with st.sidebar:
 # -------------------- Filter data --------------------
 mask = (df[DATE_COL].dt.date >= d1) & (df[DATE_COL].dt.date <= d2)
 
-if sel_customer != "(All)":
-    mask &= (df[CUSTOMER_COL].astype(str) == sel_customer)
+# Customers
+if sel_customers:
+    mask &= df[CUSTOMER_COL].isin(sel_customers)
 
-# ✅ Apply status filter to EVERYTHING (KPIs + charts + table)
+# Technicians
+if sel_techs is not None and TECH_COL and TECH_COL in df.columns:
+    if sel_techs:
+        mask &= df[TECH_COL].isin(sel_techs)
+
+# Status
 if sel_status != "(All)":
     mask &= (df[STATUS_COL] == sel_status)
 
@@ -155,7 +197,7 @@ k3.metric("Not Attended", int((dff[STATUS_COL] == "NOT ATTENDED").sum()))
 # -------------------- Charts --------------------
 left, right = st.columns(2, gap="large")
 
-# When viewing "(All)", hide BLANK in charts (but keep it in table)
+# For charts: when status is "(All)", hide BLANK so charts match your original
 chart_base = dff.copy()
 if sel_status == "(All)":
     chart_base = chart_base[chart_base[STATUS_COL].isin(status_order)].copy()
@@ -190,7 +232,11 @@ with left:
 
 # ---------- CUSTOMER TREND ----------
 with right:
-    customer_title = "All Customers" if sel_customer == "(All)" else sel_customer
+    # If multiple customers selected, show "Selected Customers"
+    if len(sel_customers) == 1:
+        customer_title = sel_customers[0]
+    else:
+        customer_title = "Selected Customers"
     st.subheader(customer_title)
 
     full_range = (d1 == min_d and d2 == max_d)
