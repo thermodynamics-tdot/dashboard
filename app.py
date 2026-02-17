@@ -65,19 +65,20 @@ def normalize_text(x):
 
 def multiselect_with_all(label, options, default_all=True, key=None):
     """
-    Streamlit multiselect with an (All) option that selects everything.
-    Treat empty selection as All.
+    Multiselect with (All). If (All) is selected (or nothing selected),
+    return None meaning: don't filter this field.
     """
     options = [o for o in options if o is not None]
     options_sorted = sorted(options, key=lambda s: str(s).lower())
+
     all_label = "(All)"
     ui_options = [all_label] + options_sorted
-
     default = [all_label] if default_all else []
+
     chosen = st.multiselect(label, ui_options, default=default, key=key)
 
     if all_label in chosen or len(chosen) == 0:
-        return options_sorted
+        return None  # IMPORTANT: no filtering
     return chosen
 
 # -------------------- Load --------------------
@@ -112,10 +113,8 @@ CALL_ID_COL = CALL_ID_COL_REAL  # may be None
 df[DATE_COL] = pd.to_datetime(df[DATE_COL], errors="coerce")
 df = df.dropna(subset=[DATE_COL]).copy()
 
-# Normalize status (keep BLANK rows)
+# Normalize fields
 df[STATUS_COL] = df[STATUS_COL].apply(normalize_status)
-
-# Normalize customer/tech to clean strings
 df[CUSTOMER_COL] = df[CUSTOMER_COL].apply(normalize_text)
 if TECH_COL and TECH_COL in df.columns:
     df[TECH_COL] = df[TECH_COL].apply(normalize_text)
@@ -138,12 +137,12 @@ with st.sidebar:
     st.markdown("## Filters")
 
     # Customers
-    customer_options = df[CUSTOMER_COL].dropna().unique().tolist()
+    customer_options = df[CUSTOMER_COL].unique().tolist()
     sel_customers = multiselect_with_all("Customer", customer_options, default_all=True, key="cust_multi")
 
     # Technicians
     if TECH_COL and TECH_COL in df.columns:
-        tech_options = df[TECH_COL].dropna().unique().tolist()
+        tech_options = df[TECH_COL].unique().tolist()
         sel_techs = multiselect_with_all("Technician", tech_options, default_all=True, key="tech_multi")
     else:
         sel_techs = None
@@ -155,10 +154,8 @@ with st.sidebar:
     min_d = df[DATE_COL].min().date()
     max_d = df[DATE_COL].max().date()
 
-    # ✅ Show today's date in UI, even if data doesn't have it
+    # Show today's date in UI (even if data doesn't have it)
     today = date.today()
-
-    # ✅ Reset end_date to today once per new day (unless user changed it after load)
     if st.session_state.get("_end_date_last_set") != today:
         st.session_state["end_date"] = today
         st.session_state["_end_date_last_set"] = today
@@ -171,19 +168,18 @@ with st.sidebar:
         d1, d2_ui = d2_ui, d1
 
 # -------------------- Filter data --------------------
-# ✅ Use data max for filtering if UI end date is beyond available data
+# Filtering end date cannot exceed the max date in the data
 d2 = min(d2_ui, max_d)
 
 mask = (df[DATE_COL].dt.date >= d1) & (df[DATE_COL].dt.date <= d2)
 
-# Customers
-if sel_customers:
+# Customers (ONLY filter if not All)
+if sel_customers is not None:
     mask &= df[CUSTOMER_COL].isin(sel_customers)
 
-# Technicians
+# Technicians (ONLY filter if not All)
 if sel_techs is not None and TECH_COL and TECH_COL in df.columns:
-    if sel_techs:
-        mask &= df[TECH_COL].isin(sel_techs)
+    mask &= df[TECH_COL].isin(sel_techs)
 
 # Status
 if sel_status != "(All)":
@@ -208,7 +204,7 @@ k3.metric("Not Attended", int((dff[STATUS_COL] == "NOT ATTENDED").sum()))
 # -------------------- Charts --------------------
 left, right = st.columns(2, gap="large")
 
-# For charts: when status is "(All)", hide BLANK so charts match your original
+# For charts: when status is "(All)", show only the main 3 statuses (like your original)
 chart_base = dff.copy()
 if sel_status == "(All)":
     chart_base = chart_base[chart_base[STATUS_COL].isin(status_order)].copy()
@@ -221,7 +217,7 @@ with left:
         chart_base[STATUS_COL]
         .value_counts()
         .reindex(status_order)
-        .dropna()
+        .fillna(0)
         .reset_index()
     )
     status_counts.columns = ["STATUS", "COUNT"]
@@ -243,7 +239,11 @@ with left:
 
 # ---------- CUSTOMER TREND ----------
 with right:
-    customer_title = sel_customers[0] if len(sel_customers) == 1 else "Selected Customers"
+    # If multiple customers selected, show "Selected Customers"
+    if sel_customers is not None and len(sel_customers) == 1:
+        customer_title = sel_customers[0]
+    else:
+        customer_title = "Selected Customers"
     st.subheader(customer_title)
 
     full_range = (d1 == min_d and d2 == max_d)
