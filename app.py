@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+from datetime import date
 
 # -------------------- Page --------------------
 st.set_page_config(page_title="Service Calls Dashboard", layout="wide")
@@ -212,28 +213,28 @@ with st.sidebar:
     else:
         sel_techs = None
 
-    # Status dropdown (use statuses present; keep main 3 first)
-    statuses_in_file = df[STATUS_COL].dropna().astype(str).unique().tolist()
-    preferred = [s for s in status_order if s in statuses_in_file]
-    remaining = sorted([s for s in statuses_in_file if s not in preferred], key=lambda x: str(x).lower())
-    status_options = preferred + remaining
-
+    # ✅ Status filter (same UI as customer/technician)
+    status_options = df[STATUS_COL].dropna().unique().tolist()
     sel_statuses = dropdown_checkbox_filter(
         "Status",
         status_options,
         key_prefix="status",
         default_all=True,
-        height_px=160,
+        height_px=220,
         expanded=False,
     )
 
     min_d = df[DATE_COL].min().date()
     max_d = df[DATE_COL].max().date()
 
+    # ✅ Default end date = today (clamped to available data range)
+    today = date.today()
+    default_end = min(max_d, max(min_d, today))
+
     # Date range (opens below)
     with st.expander("Choose a date range", expanded=True):
         d1 = st.date_input("Start date", min_d, key="start_date")
-        d2 = st.date_input("End date", max_d, key="end_date")
+        d2 = st.date_input("End date", default_end, key="end_date")
 
     if d1 > d2:
         d1, d2 = d2, d1
