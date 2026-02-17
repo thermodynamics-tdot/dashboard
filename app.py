@@ -160,8 +160,8 @@ with st.sidebar:
     default_end = min(today, max_d)
 
     with st.expander("Choose a date range", expanded=True):
-    d1 = st.date_input("Start date", min_d, key="start_date")
-    d2 = st.date_input("End date", default_end, key="end_date")
+        d1 = st.date_input("Start date", min_d, key="start_date")
+        d2 = st.date_input("End date", default_end, key="end_date")
 
 
     if d1 > d2:
